@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "racklr",
+  "project_id": "6dd6bc9c-262e-4bb6-9a21-2479e90bd240"
+}
