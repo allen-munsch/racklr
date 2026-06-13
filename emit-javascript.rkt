@@ -375,7 +375,7 @@
      (format "export default ~a" (emit-javascript (second args)))]
     ;; export const x = 1; / export function f() {} ...
     [(and (uir-symbol? first-arg) (string=? (uir-symbol-name first-arg) "decl"))
-     (format "export ~a" (emit-statement (second args)))]
+     (format "export ~a" (emit-javascript (second args)))]
     ;; export { x, y } or export { x, y } from 'm'
     [(uir-record? first-arg)
      (define entries (uir-record-entries first-arg))

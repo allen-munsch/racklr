@@ -478,5 +478,39 @@
   (check-true (string-contains? emitted "y"))
   (check-true (string-contains? emitted "z")))
 
-#;(cleanup)
+;; ── Labeled statement ──────────────────────────────────────────────
+
+(let-values ([(uir emitted) (check-js "label: 1;")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "label"))
+  (check-true (string-contains? emitted "1")))
+
+(let-values ([(uir emitted) (check-js "label: for(;;) {}")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "label"))
+  (check-true (string-contains? emitted "for")))
+
+;; ── Named exports ──────────────────────────────────────────────────
+
+(let-values ([(uir emitted) (check-js "export const x = 1;")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "export"))
+  (check-true (string-contains? emitted "const"))
+  (check-true (string-contains? emitted "x"))
+  (check-true (string-contains? emitted "1")))
+
+(let-values ([(uir emitted) (check-js "export function f() { return 1; }")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "export"))
+  (check-true (string-contains? emitted "function"))
+  (check-true (string-contains? emitted "f"))
+  (check-true (string-contains? emitted "return")))
+
+(let-values ([(uir emitted) (check-js "export { x, y };")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "export"))
+  (check-true (string-contains? emitted "x"))
+  (check-true (string-contains? emitted "y")))
+
+(cleanup)
 (displayln "All JavaScript lowering tests passed.")

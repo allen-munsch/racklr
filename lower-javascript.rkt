@@ -928,26 +928,36 @@
      (cond
        ;; export { x, y } or export { x, y } from 'm'
        [efb
-        (define items-group
-          (let ([emi (find-kid efb (quote exportModuleItems))])
-            (and emi (find-kid emi (quote group)))))
-        (define bindings (quote ()))
-        (when items-group
-          (let loop ([ks (kids-of items-group)])
-            (cond [(null? ks) (void)]
-                  [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) (quote exportAliasName)))
-                   (let ([b (extract-export-alias (car ks) tk-type tk-value)])
-                     (when b (set! bindings (cons b bindings))))
-                   (loop (cdr ks))]
-                  [(pair? (car ks))
-                   (for ([g (car ks)] #:when (cst-node? g))
-                     (define ean (find-kid g (quote exportAliasName)))
-                     (let ([b (extract-export-alias ean tk-type tk-value)])
-                       (when b (set! bindings (cons b bindings)))))
-                   (loop (cdr ks))]
-                  [else (loop (cdr ks))])))
-        (define source (uir-null))
-        (define if-node (find-kid efb (quote importFrom)))
+         (define emi (find-kid efb (quote exportModuleItems)))
+         (define bindings (quote ()))
+         (when emi
+           (let loop ([ks (kids-of emi)])
+             (cond [(null? ks) (void)]
+                   [(and (cst-node? (car ks))
+                         (eq? (tag-of (car ks)) (quote exportAliasName)))
+                    (let ([b (extract-export-alias (car ks) tk-type tk-value)])
+                      (when b (set! bindings (cons b bindings))))
+                    (loop (cdr ks))]
+                   [(and (cst-node? (car ks))
+                         (eq? (tag-of (car ks)) (quote group)))
+                    ;; Parse-opt wraps the last item in a direct group node
+                    (define ean (find-kid (car ks) (quote exportAliasName)))
+                    (when ean
+                      (let ([b (extract-export-alias ean tk-type tk-value)])
+                        (when b (set! bindings (cons b bindings)))))
+                    (loop (cdr ks))]
+                   [(pair? (car ks))
+                    (for ([g (car ks)] #:when (cst-node? g))
+                      (define ean
+                        (or (find-kid g (quote exportAliasName))
+                            (and (eq? (tag-of g) (quote exportAliasName)) g)))
+                      (when ean
+                        (let ([b (extract-export-alias ean tk-type tk-value)])
+                          (when b (set! bindings (cons b bindings))))))
+                    (loop (cdr ks))]
+                   [else (loop (cdr ks))])))
+         (define source (uir-null))
+         (define if-node (find-kid efb (quote importFrom)))
         (when if-node
           (define src-tok (for/or ([k (kids-of if-node)] #:when (and (tok? k tk-type) (eq? (tk-type k) (quote StringLiteral)))) k))
           (when src-tok
