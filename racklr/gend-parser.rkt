@@ -872,7 +872,13 @@
           (string-join (map (λ (n) (format "parse-~a" n)) names) " ")))
 
 (define (gen-entry parser-rules)
-  (define first-name (any-tree-text (first (any-tree-children (first parser-rules)))))
+  (define first-name
+    (let ([program-rule (findf (lambda (r)
+                                 (string=? (any-tree-text (first (any-tree-children r))) "program"))
+                               parser-rules)])
+      (if program-rule
+          "program"
+          (any-tree-text (first (any-tree-children (first parser-rules)))))))
   (format "
 (define (parse in)
   (define tks (tokenize in))
