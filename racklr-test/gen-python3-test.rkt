@@ -1,13 +1,13 @@
 #lang racket
 
 (require rackunit
-         "tree.rkt"
-         "gen-test.rkt")
+         racklr/tree
+         racklr/gen-test)
 
 ;; ── Load the Python3 parser ──────────────────────────────────────────
 
 (define-values (py-parse py-tokenize tok-type tok-value)
-  (gen-and-load "grammars-v4/python/python3/Python3Parser.g4"))
+  (gen-and-load-py "../grammars-v4/python/python3/Python3Parser.g4"))
 
 ;; ── Tokenizer Tests ──────────────────────────────────────────────────
 
@@ -151,6 +151,38 @@
   (check-true (any-tree? cst))
   (check-equal? (any-tree-tag cst) 'single_input)
   (check-true (cst-contains-tag? cst 'expr_stmt)))
+
+;; ── Compound Statement Tests (require INDENT/DEDENT) ─────────────────
+
+;; Function definition
+(let ([cst (py-parse "def foo():\n    pass\n\n")])
+  (check-true (any-tree? cst))
+  (check-equal? (any-tree-tag cst) 'single_input)
+  (check-true (cst-contains-tag? cst 'funcdef)))
+
+;; If statement
+(let ([cst (py-parse "if x:\n    pass\n\n")])
+  (check-true (any-tree? cst))
+  (check-equal? (any-tree-tag cst) 'single_input)
+  (check-true (cst-contains-tag? cst 'if_stmt)))
+
+;; While loop
+(let ([cst (py-parse "while x:\n    pass\n\n")])
+  (check-true (any-tree? cst))
+  (check-equal? (any-tree-tag cst) 'single_input)
+  (check-true (cst-contains-tag? cst 'while_stmt)))
+
+;; For loop
+(let ([cst (py-parse "for x in y:\n    pass\n\n")])
+  (check-true (any-tree? cst))
+  (check-equal? (any-tree-tag cst) 'single_input)
+  (check-true (cst-contains-tag? cst 'for_stmt)))
+
+;; Class definition
+(let ([cst (py-parse "class Foo:\n    pass\n\n")])
+  (check-true (any-tree? cst))
+  (check-equal? (any-tree-tag cst) 'single_input)
+  (check-true (cst-contains-tag? cst 'classdef)))
 
 ;; ── Rejection Tests ──────────────────────────────────────────────────
 

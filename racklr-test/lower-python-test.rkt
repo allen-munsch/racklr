@@ -1,16 +1,27 @@
 #lang racket
 
 (require rackunit
-         "tree.rkt"
-         "uir.rkt"
-         "gen-test.rkt"
-         "lower-python.rkt"
-         "emit-python.rkt")
+         racklr/tree
+         racklr/uir
+         racklr/gen-test
+         racklr/g4-parse
+         racklr/gend-parser
+         racklr/lower-python
+         racklr/emit-python)
 
 ;; ── Load the Python3 parser ──────────────────────────────────────────
 
 (define-values (py-parse py-tokenize py-tok-type py-tok-value)
-  (gen-and-load-py "grammars-v4/python/python3/Python3Parser.g4"))
+  (gen-and-load-py "../grammars-v4/python/python3/Python3Parser.g4"))
+
+;; Load raw parse-file_input from the SAME generated module as gen-and-load-py
+;; (avoids cross-module token struct incompatibility)
+(define py-parse-file-input
+  (let ([mod-path (*last-module-path*)])
+    (λ (src)
+      (define tks ((dynamic-require mod-path 'tokenize) src))
+      (match-define (list _fp res) ((dynamic-require mod-path 'parse-file_input) tks 0))
+      res)))
 
 ;; ── Round-trip test helper ──────────────────────────────────────────
 
@@ -424,6 +435,35 @@
   (check-true (uir-var? (uir-if-test uir)) "test is var")
   (check-true (uir-var? (uir-if-else uir)) "else is var"))
 
+;; ── Type annotations ────────────────────────────────────────────────
+
+;; round-trip: variable annotation
+(check-py "x: int\n" "x: int")
+
+;; round-trip: variable annotation with initializer
+(check-py "x: int = 5\n" "x: int = 5")
+
+;; round-trip: plain assignment (no annotation)
+(check-py "x = 5\n" "x = 5")
+
+;; round-trip: function return type annotation
+(check-py "def f() -> int:\n    pass\n\n" "def f() -> int:\n    pass")
+
+;; round-trip: function with typed parameters
+(check-py "def f(x: int):\n    pass\n\n" "def f(x: int):\n    pass")
+
+;; round-trip: function with typed params, defaults, and return type
+(check-py "def f(x: int, y: str = \"hi\") -> bool:\n    pass\n\n"
+          "def f(x: int, y: str = \"hi\") -> bool:\n    pass")
+
+;; round-trip: typed param with default only
+(check-py "def f(x: int = 1):\n    pass\n\n" "def f(x: int = 1):\n    pass")
+
+;; UIR inspection: annotated assignment
+(let ([cst (py-parse "x: int\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-ann-set!? uir) "annotated assignment lowers to uir-ann-set!"))
+
 ;; ── Identity and membership operators ───────────────────────────────
 
 ;; round-trip: is
@@ -438,6 +478,123 @@
   (check-true (uir-call? uir) "is lowers to uir-call")
   (check-equal? (uir-symbol-name (uir-call-callee uir)) "is" "callee is is")
   (check-equal? (length (uir-call-args uir)) 2 "two args"))
+
+;; ── Expression precedence / parenthesization ────────────────────────
+
+;; round-trip: parenthesized expression preserves parens
+(check-py "(x + y)\n" "(x + y)")
+
+;; round-trip: nested parens
+(check-py "((x))\n" "((x))")
+(check-py "((x + y))\n" "((x + y))")
+
+;; round-trip: tuples (should not be treated as parenthesized)
+(check-py "(x,)\n" "(x,)")
+(check-py "(1, 2)\n" "(1, 2)")
+(check-py "(1, 2, 3)\n" "(1, 2, 3)")
+
+;; round-trip: plain expression (no parens)
+(check-py "x + y\n" "x + y")
+
+;; UIR inspection: parenthesized expression
+(let ([cst (py-parse "(x + y)\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-paren? uir) "paren expr lowers to uir-paren"))
+
+;; ── Classes ─────────────────────────────────────────────────────────
+
+;; round-trip: empty class
+(check-py "class Foo:\n    pass\n\n" "class Foo:\n    pass")
+
+;; round-trip: class with inheritance
+(check-py "class Foo(Bar):\n    pass\n\n" "class Foo(Bar):\n    pass")
+
+;; round-trip: class with field
+(check-py "class Foo:\n    x = 1\n\n" "class Foo:\n    x = 1")
+
+;; round-trip: class with method
+(check-py "class Foo:\n    def m(self):\n        pass\n\n"
+          "class Foo:\n    def m(self):\n        pass")
+
+;; round-trip: class with field and method
+(check-py "class Foo:\n    x = 1\n    def m(self, y):\n        pass\n\n"
+          "class Foo:\n    x = 1\n    def m(self, y):\n        pass")
+
+;; UIR inspection: class
+(let ([cst (py-parse "class Foo:\n    pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-class? uir) "class lowers to uir-class")
+  (check-true (uir-null? (uir-class-super uir)) "no superclass"))
+
+;; ── File input / multi-statement ────────────────────────────────────
+
+;; file_input parses multiple statements
+(let ([cst (py-parse-file-input "x = 1\ny = 2\n")])
+  (check-true (any-tree? cst) "file_input parse")
+  (check-equal? (any-tree-tag cst) 'file_input "file_input tag")
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-block? uir) "file_input lowers to uir-block")
+  (define emitted (emit-python uir))
+  (check-true (string-contains? emitted "x = 1") "file output contains first stmt")
+  (check-true (string-contains? emitted "y = 2") "file output contains second stmt"))
+
+
+;; ── Match/case ──────────────────────────────────────────────────────
+
+;; round-trip: match with literal pattern
+(check-py "match x:\n    case 1:\n        pass\n\n" "match x:\n    case 1:\n        pass")
+
+;; round-trip: match with wildcard pattern
+(check-py "match x:\n    case _:\n        pass\n\n" "match x:\n    case _:\n        pass")
+
+;; round-trip: match with capture pattern
+(check-py "match x:\n    case y:\n        pass\n\n" "match x:\n    case y:\n        pass")
+
+;; round-trip: match with guard
+(check-py "match x:\n    case y if y > 0:\n        pass\n\n" "match x:\n    case y if y > 0:\n        pass")
+
+;; round-trip: match with or patterns
+(check-py "match x:\n    case 1 | 2:\n        pass\n\n" "match x:\n    case 1 | 2:\n        pass")
+
+;; round-trip: match with sequence pattern
+(check-py "match x:\n    case [a, b]:\n        pass\n\n" "match x:\n    case [a, b]:\n        pass")
+
+;; round-trip: match with as pattern
+(check-py "match x:\n    case [a, b] as pair:\n        pass\n\n"
+          "match x:\n    case [a, b] as pair:\n        pass")
+
+;; round-trip: match with string literal pattern
+(check-py "match x:\n    case \"hello\":\n        pass\n\n" "match x:\n    case \"hello\":\n        pass")
+
+;; round-trip: match with multiple pattern types (or + wildcard)
+(check-py "match x:\n    case 1 | 2 | _:\n        pass\n\n" "match x:\n    case 1 | 2 | _:\n        pass")
+
+;; round-trip: match with complex subject expression
+(check-py "match a + b:\n    case _:\n        pass\n\n" "match a + b:\n    case _:\n        pass")
+
+;; UIR inspection: match
+(let ([cst (py-parse "match x:\n    case 1:\n        pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-match? uir) "match lowers to uir-match")
+  (check-true (uir-var? (uir-match-subject uir)) "subject is uir-var")
+  (check-equal? (uir-symbol-name (uir-var-name (uir-match-subject uir))) "x" "subject is x")
+  (check-true (pair? (uir-match-cases uir)) "has cases"))
+
+;; UIR inspection: case with literal
+(let ([cst (py-parse "match x:\n    case 1:\n        pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define cases (uir-match-cases uir))
+  (check-equal? (length cases) 1 "one case")
+  (define c1 (first cases))
+  (check-true (uir-case? c1) "case struct")
+  (check-true (uir-pat-literal? (uir-case-pattern c1)) "literal pattern")
+  (check-false (uir-case-guard c1) "no guard"))
+
+;; UIR inspection: case with guard
+(let ([cst (py-parse "match x:\n    case y if y > 0:\n        pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define c1 (first (uir-match-cases uir)))
+  (check-not-false (uir-case-guard c1) "has guard"))
 
 ;; ── Cleanup ─────────────────────────────────────────────────────────
 

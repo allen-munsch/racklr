@@ -3,3 +3,13 @@
 .dolt/
 *.db
 .beads-credential-key
+# Generated parser artifacts (build output)
+gen-*-tmp.rkt
+gen-sqlite-parser.rkt
+gen-sqlite-tmp.rkt
+# ANTLR grammars (nested git repo)
+grammars-v4/
+# Racket bytecode
+compiled/
+# Debug / scratch files
+_*.rkt

@@ -1,6 +1,6 @@
 #lang racket
 
-(require "tree.rkt")
+(require racklr/tree)
 
 (provide
  ;; Tier 0: Core computational IR
@@ -13,21 +13,41 @@
  uir-record uir-record? uir-record-entries
  uir-symbol uir-symbol? uir-symbol-name
  ;; Functions and control flow
- uir-fn uir-fn? uir-fn-name uir-fn-params uir-fn-body
+  uir-fn uir-fn? uir-fn-name uir-fn-params uir-fn-body
+  uir-fn-return-type
+  uir-typed-param uir-typed-param? uir-typed-param-name uir-typed-param-type uir-typed-param-default
  uir-call uir-call? uir-call-callee uir-call-args
  uir-let uir-let? uir-let-name uir-let-value uir-let-body
- uir-var uir-var? uir-var-name
- uir-set! uir-set!? uir-set!-name uir-set!-value
- uir-if uir-if? uir-if-test uir-if-then uir-if-else
+  uir-var uir-var? uir-var-name
+  uir-set! uir-set!? uir-set!-name uir-set!-value
+  uir-ann-set! uir-ann-set!? uir-ann-set!-lhs uir-ann-set!-type uir-ann-set!-value
+  uir-if uir-if? uir-if-test uir-if-then uir-if-else
  uir-block uir-block? uir-block-stmts
  uir-return uir-return? uir-return-value
   uir-for-each uir-for-each? uir-for-each-var uir-for-each-iterable uir-for-each-body uir-for-each-else-body
+  uir-while uir-while? uir-while-test uir-while-body uir-while-else-body
   uir-try uir-try? uir-try-body uir-try-catches uir-try-else-body uir-try-finally-body
   uir-with uir-with? uir-with-items uir-with-body
   uir-await uir-await? uir-await-expr
   uir-yield uir-yield? uir-yield-value uir-yield-from?
   uir-decorated uir-decorated? uir-decorated-decorators uir-decorated-inner
   uir-get uir-get? uir-get-base uir-get-field
+  uir-paren uir-paren? uir-paren-inner
+  ;; Pattern matching (match/case)
+  uir-match uir-match? uir-match-subject uir-match-cases
+  uir-case uir-case? uir-case-pattern uir-case-guard uir-case-body
+  uir-pat-literal uir-pat-literal? uir-pat-literal-value
+  uir-pat-capture uir-pat-capture? uir-pat-capture-name
+  uir-pat-wildcard uir-pat-wildcard?
+  uir-pat-value uir-pat-value? uir-pat-value-path
+  uir-pat-or uir-pat-or? uir-pat-or-alts
+  uir-pat-as uir-pat-as? uir-pat-as-pattern uir-pat-as-name
+  uir-pat-sequence uir-pat-sequence? uir-pat-sequence-elements
+  uir-pat-star uir-pat-star? uir-pat-star-name
+  uir-pat-mapping uir-pat-mapping? uir-pat-mapping-entries uir-pat-mapping-rest
+  uir-pat-double-star uir-pat-double-star? uir-pat-double-star-name
+  uir-pat-class uir-pat-class? uir-pat-class-cls uir-pat-class-positional uir-pat-class-keyword
+  uir-pat-group uir-pat-group? uir-pat-group-pattern
   ;; Tier 1: OOP / Module IR
  uir-class uir-class? uir-class-name uir-class-super uir-class-fields uir-class-methods
  uir-method uir-method? uir-method-name uir-method-params uir-method-body uir-method-visibility
@@ -70,11 +90,14 @@
 (struct uir-symbol (name) #:transparent)
 
 ;; Functions and control flow
-(struct uir-fn (name params body) #:transparent)     ;; name: #f or uir-symbol, params: (listof uir-symbol), body: uir?
+(struct uir-fn (name params body return-type) #:transparent)  ;; name: #f or uir-symbol, return-type: #f or uir?
+(struct uir-typed-param (name type default) #:transparent)   ;; name: uir-symbol, type/default: #f or uir?
 (struct uir-call (callee args) #:transparent)    ;; callee: uir?, args: (listof uir?)
 (struct uir-let (name value body) #:transparent) ;; name: uir-symbol, value: uir?, body: uir?
 (struct uir-var (name) #:transparent)            ;; name: uir-symbol
 (struct uir-set! (name value) #:transparent)     ;; name: uir-symbol, value: uir?
+;; Annotated assignment: x: int = 5 or x: int (no value)
+(struct uir-ann-set! (lhs type value) #:transparent)  ;; value can be #f for annotation-only
 (struct uir-if (test then else) #:transparent)   ;; test/then/else: all uir?
 (struct uir-block (stmts) #:transparent)         ;; stmts: (listof uir?)
 (struct uir-return (value) #:transparent)        ;; value: uir?
@@ -82,6 +105,9 @@
 ;; For-each loop: for var in iterable: body (else: else-body)
 ;; var: uir-symbol, iterable: uir?, body: uir?, else-body: uir? (uir-null if no else)
 (struct uir-for-each (var iterable body else-body) #:transparent)
+
+;; While loop: test, body, optional else-body (uir-null if no else)
+(struct uir-while (test body else-body) #:transparent)
 
 ;; Try/catch: try body, catch clauses, optional else and finally
 ;; catches: (listof (list exception-type exception-name body))
@@ -110,6 +136,53 @@
 ;; base: uir? — the object being accessed
 ;; field: uir? — uir-string for .attr, any uir for [key]
 (struct uir-get (base field) #:transparent)
+
+;; Parenthesized expression — preserves explicit grouping for round-trip
+(struct uir-paren (inner) #:transparent)
+
+;; ── Match/Case (Python 3.10+) ────────────────────────────────────
+
+;; Match statement: match subject: case pattern [if guard]: body ...
+(struct uir-match (subject cases) #:transparent)     ;; subject: uir?, cases: (listof uir-case)
+(struct uir-case (pattern guard body) #:transparent)  ;; pattern: uir-pat?, guard: #f or uir?, body: uir?
+
+;; Pattern IR — represents destructuring patterns in match/case
+
+;; Literal pattern: case 42: / case "hello": / case None: / case True:
+(struct uir-pat-literal (value) #:transparent)  ;; value: uir? (number, string, boolean, None as uir-symbol)
+
+;; Capture pattern: case x: (binds a variable)
+(struct uir-pat-capture (name) #:transparent)   ;; name: uir-symbol
+
+;; Wildcard pattern: case _:
+(struct uir-pat-wildcard () #:transparent)
+
+;; Value pattern: case SomeClass.ATTR: (dotted name lookup)
+(struct uir-pat-value (path) #:transparent)     ;; path: uir-symbol or uir-get chain
+
+;; OR pattern: case 1 | 2 | 3:
+(struct uir-pat-or (alts) #:transparent)        ;; alts: (listof uir-pat?)
+
+;; AS pattern: case (pat) as name:
+(struct uir-pat-as (pattern name) #:transparent) ;; pattern: uir-pat?, name: uir-symbol
+
+;; Sequence pattern: case [a, b, *rest]: / case (a, b):
+(struct uir-pat-sequence (elements) #:transparent) ;; elements: (listof uir-pat?, may include uir-pat-star)
+
+;; Star pattern: *name or *_
+(struct uir-pat-star (name) #:transparent)       ;; name: uir-symbol or #f for wildcard star
+
+;; Mapping pattern: case {key: val, **rest}:
+(struct uir-pat-mapping (entries rest) #:transparent) ;; entries: (listof (cons uir-pat? uir-pat?)), rest: #f or uir-pat-double-star
+
+;; Double-star pattern: **name
+(struct uir-pat-double-star (name) #:transparent)     ;; name: uir-symbol
+
+;; Class pattern: case ClassName(pos1, pos2, key=val):
+(struct uir-pat-class (cls positional keyword) #:transparent) ;; cls: uir-symbol or uir-get, positional: (listof uir-pat?), keyword: (listof (cons uir-symbol uir-pat?))
+
+;; Group pattern: case (pattern):
+(struct uir-pat-group (pattern) #:transparent)
 
 ;; ── Tier 1: OOP / Module IR ───────────────────────────────────────
 
@@ -186,20 +259,24 @@
       (uir-record? v)
       (uir-symbol? v)
       (uir-fn? v)
+      (uir-typed-param? v)
       (uir-call? v)
       (uir-let? v)
       (uir-var? v)
       (uir-set!? v)
+      (uir-ann-set!? v)
       (uir-if? v)
       (uir-block? v)
       (uir-return? v)
       (uir-for-each? v)
+      (uir-while? v)
       (uir-try? v)
       (uir-with? v)
       (uir-await? v)
       (uir-yield? v)
       (uir-decorated? v)
       (uir-get? v)
+      (uir-paren? v)
       (uir-class? v)
       (uir-method? v)
       (uir-field? v)
@@ -216,7 +293,21 @@
       (uir-text-node? v)
       (uir-style? v)
       (uir-effect? v)
-      (uir-state? v)))
+       (uir-state? v)
+       (uir-match? v)
+       (uir-case? v)
+       (uir-pat-literal? v)
+       (uir-pat-capture? v)
+       (uir-pat-wildcard? v)
+       (uir-pat-value? v)
+       (uir-pat-or? v)
+       (uir-pat-as? v)
+       (uir-pat-sequence? v)
+       (uir-pat-star? v)
+       (uir-pat-mapping? v)
+       (uir-pat-double-star? v)
+       (uir-pat-class? v)
+       (uir-pat-group? v)))
 
 (define (uir-tag v)
   (cond [(uir-null? v)   'null]
@@ -228,20 +319,24 @@
         [(uir-record? v) 'record]
         [(uir-symbol? v) 'symbol]
         [(uir-fn? v)     'fn]
+        [(uir-typed-param? v) 'typed-param]
         [(uir-call? v)   'call]
         [(uir-let? v)    'let]
         [(uir-var? v)    'var]
-        [(uir-set!? v)   'set!]
+        [(uir-set!? v)  'set!]
+        [(uir-ann-set!? v) 'ann-set!]
         [(uir-if? v)     'if]
         [(uir-block? v)  'block]
         [(uir-return? v) 'return]
         [(uir-for-each? v) 'for-each]
+        [(uir-while? v) 'while]
         [(uir-try? v)    'try]
         [(uir-with? v)   'with]
         [(uir-await? v)  'await]
         [(uir-yield? v)  'yield]
         [(uir-decorated? v) 'decorated]
         [(uir-get? v) 'get]
+        [(uir-paren? v) 'paren]
         [(uir-class? v)     'class]
         [(uir-method? v)    'method]
         [(uir-field? v)     'field]
@@ -259,6 +354,20 @@
         [(uir-style? v)      'style]
         [(uir-effect? v)     'effect]
         [(uir-state? v)      'state]
+        [(uir-match? v)          'match]
+        [(uir-case? v)           'case]
+        [(uir-pat-literal? v)    'pat-literal]
+        [(uir-pat-capture? v)    'pat-capture]
+        [(uir-pat-wildcard? v)   'pat-wildcard]
+        [(uir-pat-value? v)      'pat-value]
+        [(uir-pat-or? v)         'pat-or]
+        [(uir-pat-as? v)         'pat-as]
+        [(uir-pat-sequence? v)   'pat-sequence]
+        [(uir-pat-star? v)       'pat-star]
+        [(uir-pat-mapping? v)    'pat-mapping]
+        [(uir-pat-double-star? v) 'pat-double-star]
+        [(uir-pat-class? v)      'pat-class]
+        [(uir-pat-group? v)      'pat-group]
         [else (error 'uir-tag "not a UIR node: ~e" v)]))
 
 ;; ── Serialization ──────────────────────────────────────────────────
@@ -278,7 +387,11 @@
         [(uir-symbol? v) `(symbol ,(uir-symbol-name v))]
         [(uir-fn? v) `(fn ,(let ([n (uir-fn-name v)]) (if n (uir->sexp n) #f))
                           ,(map uir->sexp (uir-fn-params v))
-                          ,(uir->sexp (uir-fn-body v)))]
+                          ,(uir->sexp (uir-fn-body v))
+                          ,(let ([rt (uir-fn-return-type v)]) (if rt (uir->sexp rt) #f)))]
+        [(uir-typed-param? v) `(typed-param ,(uir->sexp (uir-typed-param-name v))
+                                           ,(uir->sexp (uir-typed-param-type v))
+                                           ,(uir->sexp (uir-typed-param-default v)))]
         [(uir-call? v) `(call ,(uir->sexp (uir-call-callee v))
                               ,(map uir->sexp (uir-call-args v)))]
         [(uir-let? v) `(let ,(uir->sexp (uir-let-name v))
@@ -287,6 +400,9 @@
         [(uir-var? v) `(var ,(uir->sexp (uir-var-name v)))]
         [(uir-set!? v) `(set! ,(uir->sexp (uir-set!-name v))
                               ,(uir->sexp (uir-set!-value v)))]
+        [(uir-ann-set!? v) `(ann-set! ,(uir->sexp (uir-ann-set!-lhs v))
+                                      ,(uir->sexp (uir-ann-set!-type v))
+                                      ,(uir->sexp (uir-ann-set!-value v)))]
         [(uir-if? v) `(if ,(uir->sexp (uir-if-test v))
                           ,(uir->sexp (uir-if-then v))
                           ,(uir->sexp (uir-if-else v)))]
@@ -296,6 +412,9 @@
                                       ,(uir->sexp (uir-for-each-iterable v))
                                       ,(uir->sexp (uir-for-each-body v))
                                       ,(uir->sexp (uir-for-each-else-body v)))]
+        [(uir-while? v) `(while ,(uir->sexp (uir-while-test v))
+                                ,(uir->sexp (uir-while-body v))
+                                ,(uir->sexp (uir-while-else-body v)))]
         [(uir-try? v) `(try ,(uir->sexp (uir-try-body v))
                             ,(map (lambda (cat)
                                     (list (uir->sexp (car cat))
@@ -320,6 +439,7 @@
                                        ,(uir->sexp (uir-decorated-inner v)))]
         [(uir-get? v) `(get ,(uir->sexp (uir-get-base v))
                             ,(uir->sexp (uir-get-field v)))]
+        [(uir-paren? v) `(paren ,(uir->sexp (uir-paren-inner v)))]
         [(uir-class? v) `(class ,(uir->sexp (uir-class-name v))
                                 ,(uir->sexp (uir-class-super v))
                                 ,(map uir->sexp (uir-class-fields v))
@@ -382,11 +502,13 @@
                          [_ (error 'sexp->uir "invalid record entry: ~e" e)]))
                      es))]
     [`(symbol ,n) (uir-symbol n)]
-    [`(fn ,name ,ps ,body) (uir-fn (if name (sexp->uir name) #f) (map sexp->uir ps) (sexp->uir body))]
+    [`(fn ,name ,ps ,body ,rt) (uir-fn (if name (sexp->uir name) #f) (map sexp->uir ps) (sexp->uir body) (if rt (sexp->uir rt) #f))]
+    [`(typed-param ,name ,type ,default) (uir-typed-param (sexp->uir name) (sexp->uir type) (sexp->uir default))]
     [`(call ,c ,as) (uir-call (sexp->uir c) (map sexp->uir as))]
     [`(let ,n ,v ,body) (uir-let (sexp->uir n) (sexp->uir v) (sexp->uir body))]
     [`(var ,n) (uir-var (sexp->uir n))]
     [`(set! ,n ,v) (uir-set! (sexp->uir n) (sexp->uir v))]
+    [`(ann-set! ,lhs ,type ,value) (uir-ann-set! (sexp->uir lhs) (sexp->uir type) (sexp->uir value))]
     [`(if ,tst ,thn ,els) (uir-if (sexp->uir tst) (sexp->uir thn) (sexp->uir els))]
     [`(block ,ss) (uir-block (map sexp->uir ss))]
     [`(return ,v) (uir-return (sexp->uir v))]
@@ -414,6 +536,7 @@
     [`(yield ,value ,from?) (uir-yield (sexp->uir value) from?)]
     [`(decorated ,decos ,inner) (uir-decorated (map sexp->uir decos) (sexp->uir inner))]
     [`(get ,base ,field) (uir-get (sexp->uir base) (sexp->uir field))]
+    [`(paren ,inner) (uir-paren (sexp->uir inner))]
     [`(class ,name ,super ,fields ,methods)
      (uir-class (sexp->uir name) (sexp->uir super)
                 (map sexp->uir fields) (map sexp->uir methods))]

@@ -1,16 +1,16 @@
 #lang racket
 
 (require rackunit
-         "tree.rkt"
-         "uir.rkt"
-         "gen-test.rkt"
-         "lower-javascript.rkt"
-         "emit-javascript.rkt")
+         racklr/tree
+         racklr/uir
+         racklr/gen-test
+         racklr/lower-javascript
+         racklr/emit-javascript)
 
 ;; ── Load the JavaScript parser ──────────────────────────────────────
 
 (define-values (js-parse js-tokenize tok-type tok-value)
-  (gen-and-load "grammars-v4/javascript/javascript-cleaned/JavaScriptParser.g4"))
+  (gen-and-load "../grammars-v4/javascript/javascript-cleaned/JavaScriptParser.g4"))
 
 ;; ── Test helper ─────────────────────────────────────────────────────
 

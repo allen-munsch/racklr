@@ -1,7 +1,7 @@
 #lang racket
 
-(require "tree.rkt"
-         "g4-parse.rkt")
+(require racklr/tree
+         racklr/g4-parse)
 
 (provide generate-parser-module)
 
@@ -78,16 +78,17 @@
   (define has-parser-rules (not (null? parser-rules)))
   (define has-newline? (lexer-has-newline-rule? all-lexer))
 
-  (string-join
-   (list (gen-header #:indent-tokens? indent-tokens?)
-         (gen-match-helpers)
-         (gen-lexer-matchers all-lexer)
-         (gen-lexer-matchers implicit-lexer-rules)
-         (gen-tokenizer mode-map #:has-newline? has-newline? #:indent-tokens? indent-tokens?)
-         (gen-parser-helpers)
-         (if has-parser-rules (gen-parser-rules parser-rules) "")
-         (if has-parser-rules (gen-entry parser-rules) (gen-lexer-entry)))
-   "\n"))
+   (string-join
+    (list (gen-header #:indent-tokens? indent-tokens?)
+          (gen-match-helpers)
+          (gen-lexer-matchers all-lexer)
+          (gen-lexer-matchers implicit-lexer-rules)
+          (gen-tokenizer mode-map #:has-newline? has-newline? #:indent-tokens? indent-tokens?)
+          (gen-parser-helpers)
+          (if has-parser-rules (gen-parser-rules parser-rules) "")
+          (if has-parser-rules (gen-parser-provides parser-rules) "")
+          (if has-parser-rules (gen-entry parser-rules) (gen-lexer-entry)))
+    "\n"))
 
 ;; ── Implicit Lexer Rules for Parser Literals ─────────────────────
 ;; In ANTLR4, string literals like '{' or 'true' used directly in parser
@@ -131,7 +132,7 @@
 (define (gen-header #:indent-tokens? [indent-tokens? #f])
   (string-append
    "#lang racket
-(require \"tree.rkt\")
+(require racklr/tree)
 (provide token token? token-type token-value token-start token-end tokenize parse)
 (struct token (type value start end) #:transparent)"
    (if indent-tokens?
@@ -853,6 +854,13 @@
      (define inner-elem (second (any-tree-children elem)))
      (gen-parser-single inner-elem)]
     [else (error "unsupported parser single elem:" tag)]))
+
+(define (gen-parser-provides parser-rules)
+  (define names
+    (for/list ([rule parser-rules])
+      (any-tree-text (first (any-tree-children rule)))))
+  (format "(provide ~a)"
+          (string-join (map (λ (n) (format "parse-~a" n)) names) " ")))
 
 (define (gen-entry parser-rules)
   (define first-name (any-tree-text (first (any-tree-children (first parser-rules)))))

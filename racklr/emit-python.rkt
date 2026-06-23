@@ -1,6 +1,6 @@
 #lang racket
 
-(require "uir.rkt")
+(require racklr/uir)
 
 (provide emit-python)
 
@@ -17,15 +17,26 @@
         [(uir-return? uir)
          (string-append spc "return " (emit-expr (uir-return-value uir)))]
         [(uir-set!? uir)
-         (string-append spc (emit-expr (uir-set!-name uir)) " = " (emit-expr (uir-set!-value uir)))]
+          (string-append spc (emit-expr (uir-set!-name uir)) " = " (emit-expr (uir-set!-value uir)))]
+        [(uir-ann-set!? uir)
+          (let ([lhs-str (emit-expr (uir-ann-set!-lhs uir))]
+                [type-str (emit-expr (uir-ann-set!-type uir))])
+            (string-append spc lhs-str ": " type-str
+                           (if (uir-ann-set!-value uir)
+                               (string-append " = " (emit-expr (uir-ann-set!-value uir)))
+                               "")))]
         [(uir-if? uir)
           ;; Emit as ternary if both branches are expressions (not blocks)
           (if (and (not (uir-block? (uir-if-then uir)))
-                   (not (uir-block? (uir-if-else uir))))
+                   (not (uir-null? (uir-if-then uir)))
+                   (not (uir-block? (uir-if-else uir)))
+                   (not (uir-null? (uir-if-else uir))))
               (string-append spc (emit-expr uir))
               (emit-if uir indent))]
         [(uir-for-each? uir)
          (emit-for-each uir indent)]
+        [(uir-while? uir)
+         (emit-while uir indent)]
         [(uir-try? uir)
           (emit-try uir indent)]
         [(uir-with? uir)
@@ -33,7 +44,9 @@
         [(uir-decorated? uir)
          (emit-decorated uir indent)]
         [(uir-fn? uir)
-         (emit-funcdef uir indent)]
+         (if (uir-fn-name uir)
+             (emit-funcdef uir indent)
+             (string-append spc (emit-lambda uir)))]
         [(uir-class? uir)
          (emit-classdef uir indent)]
         [(uir-import? uir)
@@ -82,10 +95,14 @@
           (string-append spc (emit-expr uir))]
         [(uir-get? uir)
           (string-append spc (emit-expr uir))]
+        [(uir-paren? uir)
+          (string-append spc (emit-expr uir))]
         [(uir-string? uir)
           (string-append spc (emit-expr uir))]
         [(uir-fstring? uir)
-          (string-append spc (emit-expr uir))]
+           (string-append spc (emit-expr uir))]
+        [(uir-match? uir)
+         (emit-match uir indent)]
         [else (format "~a# ?~a" spc (uir-tag uir))]))
 
 (define (emit-if uir indent)
@@ -107,6 +124,16 @@
         ""
         (string-append "\n" spc "else:\n" (emit-body (uir-for-each-else-body uir) (+ indent 1)))))
   (string-append spc "for " var-str " in " iter-str ":\n" body-str else-str))
+
+(define (emit-while uir indent)
+  (define spc (make-string (* indent 4) #\space))
+  (define test-str (emit-expr (uir-while-test uir)))
+  (define body-str (emit-body (uir-while-body uir) (+ indent 1)))
+  (define else-str
+    (if (uir-null? (uir-while-else-body uir))
+        ""
+        (string-append "\n" spc "else:\n" (emit-body (uir-while-else-body uir) (+ indent 1)))))
+  (string-append spc "while " test-str ":\n" body-str else-str))
 
 (define (emit-try uir indent)
   (define spc (make-string (* indent 4) #\space))
@@ -160,28 +187,67 @@
   (define name (uir-fn-name uir))
   (define name-str (if name (uir-symbol-name name) "???"))
   (define params-str
-    (string-join (map (λ (p) (if (uir-symbol? p) (uir-symbol-name p) (emit-expr p)))
+    (string-join (map (λ (p) (cond [(uir-symbol? p) (uir-symbol-name p)]
+                                    [(uir-typed-param? p)
+                                     (let* ([pn (uir-symbol-name (uir-typed-param-name p))]
+                                            [pt (uir-typed-param-type p)]
+                                            [pd (uir-typed-param-default p)]
+                                            [pt-str (if pt (string-append ": " (emit-expr pt)) "")]
+                                            [pd-str (if pd (string-append " = " (emit-expr pd)) "")])
+                                       (string-append pn pt-str pd-str))]
+                                    [else (emit-expr p)]))
                       (uir-fn-params uir))
                  ", "))
+  (define return-str
+    (let ([rt (uir-fn-return-type uir)])
+      (if rt (string-append " -> " (emit-expr rt)) "")))
   (string-append
-   spc "def " name-str "(" params-str "):\n"
+   spc "def " name-str "(" params-str ")" return-str ":\n"
    (emit-body (uir-fn-body uir) (+ indent 1))))
 
 (define (emit-classdef uir indent)
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-symbol-name (uir-class-name uir)))
+  (define super (uir-class-super uir))
+  (define super-str
+    (if (uir-null? super) "" (string-append "(" (emit-expr super) ")")))
+  (define fields (uir-class-fields uir))
+  (define methods (uir-class-methods uir))
+  (define indent1 (+ indent 1))
+  (define spc1 (make-string (* indent1 4) #\space))
+  (define field-lines
+    (map (λ (f)
+           (let* ([fn (uir-symbol-name (uir-field-name f))]
+                  [ft (uir-field-type f)]
+                  [fi (uir-field-init f)]
+                  [type-part (if (uir-null? ft) "" (string-append ": " (emit-expr ft)))]
+                  [init-part (if (uir-null? fi) "" (string-append " = " (emit-expr fi)))])
+             (string-append spc1 fn type-part init-part)))
+         fields))
+  (define method-lines
+    (map (λ (m) (emit-method m name indent1)) methods))
+  (define body-lines (append field-lines method-lines))
   (string-append
-   spc "class " name ":\n"
-   (string-join
-    (map (λ (m) (emit-method m name (+ indent 1))) (uir-class-methods uir))
-    "\n")))
+   spc "class " name super-str ":\n"
+   (if (null? body-lines) (string-append spc1 "pass") (string-join body-lines "\n"))))
 
 (define (emit-method uir class-name indent)
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-symbol-name (uir-method-name uir)))
+  (define self-param (car (uir-method-params uir)))
+  (define rest-params (cdr (uir-method-params uir)))
+  ;; Don't emit self as a separate param — it's always implicit
   (define params-str
-    (string-join (map (λ (p) (if (uir-symbol? p) (uir-symbol-name p) (emit-expr p)))
-                      (uir-method-params uir))
+    (string-join (map (λ (p) (cond [(uir-symbol? p) (uir-symbol-name p)]
+                                    [(uir-typed-param? p)
+                                     (let* ([pn (uir-symbol-name (uir-typed-param-name p))]
+                                            [pt (uir-typed-param-type p)]
+                                            [pd (uir-typed-param-default p)]
+                                            [pt-str (if pt (string-append ": " (emit-expr pt)) "")]
+                                            [pd-str (if pd (string-append " = " (emit-expr pd)) "")])
+                                       (string-append pn pt-str pd-str))]
+                                    [else (emit-expr p)]))
+                      rest-params)
                  ", "))
   (string-append
    spc "def " name "(self" (if (string=? params-str "") "" (string-append ", " params-str)) "):\n"
@@ -286,10 +352,10 @@
                            [0 "()"]
                            [1 (string-append "(" (emit-expr (first args)) ",)")]
                            [_ (string-append "(" (string-join (map emit-expr args) ", ") ")")])]
-                        [(and name (= (length args) 2)
-                              (member name '("is" "in" "<" ">" "==" "!=" ">=" "<="
-                                             "+" "-" "*" "/" "//" "%" "**"
-                                             "and" "or" "|" "^" "&" "<<" ">>")))
+                         [(and name (= (length args) 2)
+                               (member name '("is" "in" "<" ">" "==" "!=" ">=" "<="
+                                              "+" "-" "*" "/" "//" "%" "**" "@"
+                                              "and" "or" "|" "^" "&" "<<" ">>")))
                          (string-append (emit-expr (first args)) " " name " " (emit-expr (second args)))]
                         [(and name (= (length args) 1) (equal? name "not"))
                          (string-append "not " (emit-expr (first args)))]
@@ -312,12 +378,86 @@
         [(uir-await? uir) (emit-await uir)]
         [(uir-yield? uir) (emit-yield uir)]
         [(uir-get? uir)
-         (let ([base-str (emit-expr (uir-get-base uir))]
-               [field (uir-get-field uir)])
-           (if (uir-string? field)
-               (string-append base-str "." (uir-string-value field))
-               (string-append base-str "[" (emit-expr field) "]")))]
+          (let ([base-str (emit-expr (uir-get-base uir))]
+                [field (uir-get-field uir)])
+            (if (uir-string? field)
+                (string-append base-str "." (uir-string-value field))
+                (string-append base-str "[" (emit-expr field) "]")))]
+        [(uir-paren? uir)
+          (string-append "(" (emit-expr (uir-paren-inner uir)) ")")]
         [else (format "<?~a>" (uir-tag uir))]))
+
+;; ── Match/case emission ─────────────────────────────────────────────
+
+(define (emit-match uir indent)
+  (define spc (make-string (* indent 4) #\space))
+  (string-append
+   spc "match " (emit-expr (uir-match-subject uir)) ":\n"
+   (string-join (map (λ (c) (emit-case c (+ indent 1))) (uir-match-cases uir)) "\n")))
+
+(define (emit-case uir indent)
+  (define spc (make-string (* indent 4) #\space))
+  (define pat-str (emit-pattern (uir-case-pattern uir)))
+  (define guard-str (if (uir-case-guard uir)
+                        (string-append " if " (emit-expr (uir-case-guard uir)))
+                        ""))
+  (define body-str (emit-body (uir-case-body uir) (+ indent 1)))
+  (string-append spc "case " pat-str guard-str ":\n" body-str))
+
+(define (emit-pattern pat)
+  (cond [(uir-pat-literal? pat) (emit-pat-literal pat)]
+        [(uir-pat-capture? pat) (uir-symbol-name (uir-pat-capture-name pat))]
+        [(uir-pat-wildcard? pat) "_"]
+        [(uir-pat-value? pat) (emit-expr (uir-pat-value-path pat))]
+        [(uir-pat-or? pat) (string-join (map emit-pattern (uir-pat-or-alts pat)) " | ")]
+        [(uir-pat-as? pat)
+         (string-append (emit-pattern (uir-pat-as-pattern pat))
+                        " as " (uir-symbol-name (uir-var-name (uir-pat-as-name pat))))]
+        [(uir-pat-sequence? pat)
+         (string-append "[" (emit-pat-seq-elements (uir-pat-sequence-elements pat)) "]")]
+        [(uir-pat-star? pat)
+         (string-append "*" (if (uir-pat-star-name pat)
+                                (uir-symbol-name (uir-var-name (uir-pat-star-name pat)))
+                                "_"))]
+        [(uir-pat-mapping? pat) (emit-pat-mapping pat)]
+        [(uir-pat-double-star? pat)
+         (string-append "**" (uir-symbol-name (uir-pat-double-star-name pat)))]
+        [(uir-pat-class? pat) (emit-pat-class pat)]
+        [(uir-pat-group? pat)
+         (string-append "(" (emit-pattern (uir-pat-group-pattern pat)) ")")]
+        [else (format "<?pat ~a>" (uir-tag pat))]))
+
+(define (emit-pat-literal pat)
+  (define val (uir-pat-literal-value pat))
+  (cond [(uir-number? val) (uir-number-value val)]
+        [(uir-bool? val) (if (uir-bool-value val) "True" "False")]
+        [(uir-symbol? val) (uir-symbol-name val)]
+        [(uir-string? val) (emit-expr val)]
+        [else (emit-expr val)]))
+
+(define (emit-pat-seq-elements elems)
+  (string-join
+   (for/list ([e elems])
+     (cond [(uir-pat-star? e) (emit-pattern e)]
+           [else (emit-pattern e)]))
+   ", "))
+
+(define (emit-pat-mapping pat)
+  (define entries (uir-pat-mapping-entries pat))
+  (define rest (uir-pat-mapping-rest pat))
+  (define entry-strs
+    (for/list ([e entries])
+      (string-append (emit-pattern (car e)) ": " (emit-pattern (cdr e)))))
+  (define all-strs (if rest (append entry-strs (list (emit-pattern rest))) entry-strs))
+  (string-append "{" (string-join all-strs ", ") "}"))
+
+(define (emit-pat-class pat)
+  (define cls-str (emit-expr (uir-pat-class-cls pat)))
+  (define pos-strs (map emit-pattern (uir-pat-class-positional pat)))
+  (define kw-strs
+    (for/list ([k (uir-pat-class-keyword pat)])
+      (string-append (uir-symbol-name (car k)) "=" (emit-pattern (cdr k)))))
+  (string-append cls-str "(" (string-join (append pos-strs kw-strs) ", ") ")"))
 
 ;; ── Top-level ──────────────────────────────────────────────────────
 

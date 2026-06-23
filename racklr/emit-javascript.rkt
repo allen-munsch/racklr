@@ -1,6 +1,6 @@
 #lang racket
 
-(require "uir.rkt")
+(require racklr/uir)
 
 (provide emit-javascript)
 
@@ -76,7 +76,7 @@
            [else
             (format "~a = ~a" (emit-javascript name) (emit-javascript val))])]
     
-    [(uir-fn _ params body)
+    [(uir-fn _ params body _)
      (define param-str
        (string-join (map emit-javascript params) ", "))
      (format "function(~a) { ~a }" param-str (emit-body body))]

@@ -1,7 +1,7 @@
 #lang racket
 
-(require "tree.rkt"
-         "uir.rkt")
+(require racklr/tree
+         racklr/uir)
 
 (provide lower-python)
 
@@ -38,7 +38,9 @@
     (for ([c (any-tree-children node)])
       (cond [(token-like? c tk-type)
              (set! result (cons (list (tk-type c) (tk-value c)) result))]
-            [(cst-node? c) (walk c)])))
+            [(cst-node? c) (walk c)]
+            [(and (list? c) (pair? c))
+             (for ([cc c]) (when (cst-node? cc) (walk cc)))])))
   (reverse result))
 
 ;; Get all token children types/values (immediate only)
@@ -401,9 +403,18 @@
                                (if has-colon? "dict-comp" "set-comp")))
          (lower-dictorsetmaker (first kids) tk-type tk-value))]
     [(eq? bracket-type 'brace) (uir-record '())]
-    ;; Tuple: (expr, ...) — find test/expr items
+    ;; Tuple or parenthesized expression: (expr, ...) or (expr)
      [(eq? bracket-type 'tuple)
-      (uir-call (uir-symbol "tuple") (lower-tuple-items cst tk-type tk-value))]
+      ;; Check if this is a parenthesized expression (no comma) or a tuple (has comma)
+      (define has-comma?
+        (for/or ([t (cst-tokens-deep cst tk-type tk-value)])
+          (eq? (first t) 'COMMA)))
+      (if has-comma?
+          (uir-call (uir-symbol "tuple") (lower-tuple-items cst tk-type tk-value))
+          ;; Parenthesized expression: lower the inner expression and wrap in uir-paren
+          (let* ([items (lower-tuple-items cst tk-type tk-value)]
+                 [inner (if (pair? items) (car items) (uir-null))])
+            (uir-paren inner)))]
     [(and (null? all-toks) (null? kids)) (uir-null)]
     [(pair? kids)
      (let ([inner (first kids)])
@@ -612,6 +623,8 @@
     [(eq? tag 'del_stmt) (lower-del cst tk-type tk-value)]
     [(eq? tag 'global_stmt) (lower-global cst tk-type tk-value)]
     [(eq? tag 'nonlocal_stmt) (lower-nonlocal cst tk-type tk-value)]
+    [(eq? tag 'block) (lower-block cst tk-type tk-value)]
+    [(eq? tag 'stmt) (if (null? kids) (uir-null) (lower-block-or-stmt (first kids) tk-type tk-value))]
     [else (uir-symbol (format "?stmt-~a" tag))]))
 
 (define (lower-return cst tk-type tk-value)
@@ -639,31 +652,54 @@
          (lower-expr (first kids) tk-type tk-value)]
         [else
          (begin
-         (define augassign-node
+         ;; Check for annotated assignment: expr_stmt -> testlist_star_expr, group(annassign ...)
+         (define annassign-node
            (for/or ([k (cdr kids)])
-             (and (eq? (any-tree-tag k) (quote group))
+             (and (eq? (any-tree-tag k) 'group)
                   (let ([gk (node-children k)])
-                    (and (pair? gk) (eq? (any-tree-tag (first gk)) (quote augassign))
+                    (and (pair? gk) (eq? (any-tree-tag (first gk)) 'annassign)
                          (first gk))))))
-         (if augassign-node
-             (let* ([lhs (first kids)]
-                    [group-node (for/or ([k (cdr kids)]) (and (eq? (any-tree-tag k) (quote group)) k))]
-                    [gk (node-children group-node)]
-                    [rhs-node (if (>= (length gk) 2) (second gk) #f)]
-                     [op-tok (cst-tokens-deep augassign-node tk-type tk-value)]
-                     [op-name (if (pair? op-tok) (second (car op-tok)) "?aug")]
-                    [op-base (string-replace op-name "=" "")]
-                    [lhs-expr (lower-expr lhs tk-type tk-value)])
-               (uir-set! lhs-expr
-                         (uir-call (uir-symbol op-base)
-                                   (list lhs-expr
-                                         (if rhs-node (lower-expr rhs-node tk-type tk-value) (uir-null))))))
-             (let* ([lhs (first kids)]
-                    [rhs (find-rhs-in-children (cdr kids))])
-               (if rhs
-                   (uir-set! (lower-expr lhs tk-type tk-value)
-                             (lower-expr rhs tk-type tk-value))
-                   (lower-expr lhs tk-type tk-value)))))]))
+         (if annassign-node
+             (let* ([lhs (lower-expr (first kids) tk-type tk-value)]
+                    [ann-kids (node-children annassign-node)]
+                    ;; annassign children (cst nodes only): type-test (initializer-group)?
+                    ;; (COLON token is filtered by node-children)
+                    [type-node (if (pair? ann-kids) (first ann-kids) #f)]
+                    [type-expr (if type-node (lower-expr type-node tk-type tk-value) (uir-null))]
+                    [init-group (if (>= (length ann-kids) 2) (second ann-kids) #f)]
+                    [value-expr (if init-group
+                                   (let ([igk (node-children init-group)])
+                                     (if (pair? igk)
+                                         (lower-expr (first igk) tk-type tk-value)
+                                         #f))
+                                   #f)])
+               (uir-ann-set! lhs type-expr value-expr))
+             (let ()
+          (define augassign-node
+            (for/or ([k (cdr kids)])
+              (and (eq? (any-tree-tag k) 'group)
+                   (let ([gk (node-children k)])
+                     (and (pair? gk) (eq? (any-tree-tag (first gk)) 'augassign)
+                          (first gk))))))
+          (if augassign-node
+              (let* ([lhs (first kids)]
+                     [group-node (for/or ([k (cdr kids)]) (and (eq? (any-tree-tag k) 'group) k))]
+                     [gk (node-children group-node)]
+                     [rhs-node (if (>= (length gk) 2) (second gk) #f)]
+                      [op-tok (cst-tokens-deep augassign-node tk-type tk-value)]
+                      [op-name (if (pair? op-tok) (second (car op-tok)) "?aug")]
+                     [op-base (string-replace op-name "=" "")]
+                     [lhs-expr (lower-expr lhs tk-type tk-value)])
+                (uir-set! lhs-expr
+                          (uir-call (uir-symbol op-base)
+                                    (list lhs-expr
+                                          (if rhs-node (lower-expr rhs-node tk-type tk-value) (uir-null))))))
+              (let* ([lhs (first kids)]
+                     [rhs (find-rhs-in-children (cdr kids))])
+                (if rhs
+                    (uir-set! (lower-expr lhs tk-type tk-value)
+                              (lower-expr rhs tk-type tk-value))
+                    (lower-expr lhs tk-type tk-value)))))))]))
 
 (define (lower-import-name cst tk-type tk-value)
   (define toks (cst-tokens-deep cst tk-type tk-value))
@@ -777,16 +813,19 @@
                  [(eq? t 'compound_stmt) (lower-compound first-kid tk-type tk-value)]
                  [else (uir-symbol (format "?single-~a" t))])))]
     [(eq? tag 'file_input)
-     (define kids (node-children cst))
-     (if (null? kids)
-         (uir-null)
-         ;; file_input: (NEWLINE | stmt)*
-         (uir-block (filter-map (λ (k)
-                                 (define t (any-tree-tag k))
-                                 (if (eq? t 'stmt)
-                                     (lower-stmt k tk-type tk-value)
-                                     #f))
-                               kids)))]
+      ;; file_input: (NEWLINE | stmt)* — stmts are list-wrapped from parse-star
+      ;; Each list item is a group containing either NEWLINE token or a stmt node
+      (define stmts
+        (for/list ([c (any-tree-children cst)]
+                   #:when (and (list? c) (pair? c)))
+          (for/list ([cc c]
+                     #:when (and (cst-node? cc)
+                                 (eq? (any-tree-tag cc) 'group)))
+            (define gk (node-children cc))
+            (if (and (pair? gk) (eq? (any-tree-tag (first gk)) 'stmt))
+                (lower-python (first gk) tk-type tk-value)
+                (uir-null)))))
+      (uir-block (apply append stmts))]
     [(eq? tag 'stmt)
      (define kids (node-children cst))
      (if (null? kids)
@@ -817,26 +856,54 @@
            ['classdef (lower-classdef first-kid tk-type tk-value)]
            ['async_stmt (lower-async first-kid tk-type tk-value)]
            ['decorated (lower-decorated first-kid tk-type tk-value)]
-           [_ (uir-symbol (format "?comp-~a" (any-tree-tag first-kid)))]))))
+            ['match_stmt (lower-match first-kid tk-type tk-value)]
+            [_ (uir-symbol (format "?comp-~a" (any-tree-tag first-kid)))]))))
 
 (define (lower-if cst tk-type tk-value)
-  (define kids (node-children cst))
-  (define test-expr (lower-expr (first kids) tk-type tk-value))
-  (define then-body (lower-block-or-stmt (second kids) tk-type tk-value))
-  (define else-body
-    (if (>= (length kids) 3)
-        (let ([elif-or-else (third kids)])
-          (if (eq? (any-tree-tag elif-or-else) 'else_block)
-              (lower-block-or-stmt elif-or-else tk-type tk-value)
-              (lower-if elif-or-else tk-type tk-value)))
-        (uir-null)))
+  ;; if_stmt children: [IF tok, test, COLON tok, block, ...]
+  ;; After block: optional LIST of elif groups, optional else group
+  (define (wrap-body uir)
+    (if (uir-block? uir) uir (uir-block (list uir))))
+  (define raw-kids (any-tree-children cst))
+  (define test-expr (lower-expr (second raw-kids) tk-type tk-value))
+  (define then-body (wrap-body (lower-block-or-stmt (fourth raw-kids) tk-type tk-value)))
+  ;; Collect elif/else after position 4
+  (define rest (cddddr raw-kids))
+  ;; Flatten lists and filter to CST nodes
+  (define groups
+    (apply append
+           (for/list ([k rest])
+             (cond [(list? k) (filter cst-node? k)]
+                   [(cst-node? k) (list k)]
+                   [else '()]))))
+  (define else-body (lower-if-rest groups tk-type tk-value))
   (uir-if test-expr then-body else-body))
+
+(define (lower-if-rest groups tk-type tk-value)
+  (define (wrap-body uir)
+    (if (uir-block? uir) uir (uir-block (list uir))))
+  (if (null? groups)
+      (uir-null)
+      (let* ([group (first groups)]
+             [gkids (node-children group)])
+        (if (= (length gkids) 1)
+            ;; Else group: [block]
+            (wrap-body (lower-block-or-stmt (first gkids) tk-type tk-value))
+            ;; Elif group: [test, block]
+            (let ([elif-test (lower-expr (first gkids) tk-type tk-value)]
+                  [elif-body (wrap-body (lower-block-or-stmt (second gkids) tk-type tk-value))]
+                  [elif-else (lower-if-rest (cdr groups) tk-type tk-value)])
+              (uir-if elif-test elif-body elif-else))))))
 
 (define (lower-while cst tk-type tk-value)
   (define kids (node-children cst))
   (define test-expr (lower-expr (first kids) tk-type tk-value))
   (define body (lower-block-or-stmt (second kids) tk-type tk-value))
-  (uir-if test-expr body (uir-null)))
+  (define else-body
+    (if (>= (length kids) 3)
+        (lower-block-or-stmt (first (node-children (third kids))) tk-type tk-value)
+        (uir-null)))
+  (uir-while test-expr body else-body))
 
 (define (lower-for cst tk-type tk-value)
   (define kids (node-children cst))
@@ -961,6 +1028,309 @@
         '()))
   (uir-call name-expr args))
 
+
+;; ── Match/case ──────────────────────────────────────────────────────
+
+;; match_stmt: [subject_expr, case_block+ (list-wrapped)]
+(define (lower-match cst tk-type tk-value)
+  (define raw-kids (any-tree-children cst))
+  ;; subject_expr is the first cst-node child
+  (define subj-node
+    (for/or ([c raw-kids] #:when (cst-node? c)) c))
+  (define subject
+    (if (and subj-node (eq? (any-tree-tag subj-node) 'subject_expr))
+        (lower-expr (first (node-children subj-node)) tk-type tk-value)
+        (uir-symbol "?match-subject")))
+  ;; case_blocks are inside a list-wrapped child
+  (define case-list
+    (for/or ([c raw-kids] #:when (and (list? c) (pair? c)))
+      (filter cst-node? c)))
+  (define cases
+    (if case-list
+        (map (λ (k) (lower-case-block k tk-type tk-value)) case-list)
+        '()))
+  (uir-match subject cases))
+
+;; case_block: [patterns, guard?, block]
+(define (lower-case-block cst tk-type tk-value)
+  (define kids (node-children cst))
+  (define pat-node (first kids))
+  (define pat (lower-patterns pat-node tk-type tk-value))
+  (define-values (guard body-node)
+    (if (and (>= (length kids) 3) (eq? (any-tree-tag (second kids)) 'guard))
+        (values (lower-expr (second (any-tree-children (second kids))) tk-type tk-value) (third kids))
+        (values #f (second kids))))
+  (uir-case pat guard (lower-block body-node tk-type tk-value)))
+
+;; ── Pattern lowering ───────────────────────────────────────────────
+
+;; patterns: open_sequence_pattern | pattern
+(define (lower-patterns cst tk-type tk-value)
+  (define tag (any-tree-tag cst))
+  (if (eq? tag 'open_sequence_pattern)
+      (lower-open-sequence cst tk-type tk-value)
+      (lower-pattern cst tk-type tk-value)))
+
+(define (lower-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-null)
+      (let ([inner (first kids)])
+        ;; Unwrap intermediate wrappers: 'pattern → 'or_pattern/'as_pattern
+        (match (any-tree-tag inner)
+          ['as_pattern (lower-as-pattern inner tk-type tk-value)]
+          ['or_pattern (lower-or-pattern inner tk-type tk-value)]
+          ['pattern (lower-pattern inner tk-type tk-value)] ;; recurse through nested 'pattern
+          [_ (uir-symbol (format "?pat-~a" (any-tree-tag inner)))]))))
+
+(define (lower-or-pattern cst tk-type tk-value)
+  (define (collect-pats xs)
+    (apply append
+           (for/list ([x xs])
+             (cond [(and (cst-node? x) (eq? (any-tree-tag x) 'closed_pattern)) (list x)]
+                   [(cst-node? x) (collect-pats (any-tree-children x))]
+                   [(list? x) (collect-pats x)]
+                   [else '()]))))
+  (define closed-pats (collect-pats (any-tree-children cst)))
+  (if (= (length closed-pats) 1)
+      (lower-closed-pattern (first closed-pats) tk-type tk-value)
+      (uir-pat-or (map (λ (p) (lower-closed-pattern p tk-type tk-value)) closed-pats))))
+
+(define (lower-closed-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-null)
+      (let ([inner (first kids)])
+        (match (any-tree-tag inner)
+          ['literal_pattern (lower-literal-pattern inner tk-type tk-value)]
+          ['capture_pattern (lower-capture-pattern inner tk-type tk-value)]
+          ['wildcard_pattern (uir-pat-wildcard)]
+          ['value_pattern (lower-value-pattern inner tk-type tk-value)]
+          ['group_pattern (lower-group-pattern inner tk-type tk-value)]
+          ['sequence_pattern (lower-sequence-pattern inner tk-type tk-value)]
+          ['mapping_pattern (lower-mapping-pattern inner tk-type tk-value)]
+          ['class_pattern (lower-class-pattern inner tk-type tk-value)]
+          [_ (uir-symbol (format "?closed-~a" (any-tree-tag inner)))]))))
+
+;; literal_pattern: signed_number | complex_number | strings | 'None' | 'True' | 'False'
+(define (lower-literal-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (catch-literal-token cst tk-type tk-value)
+      (let* ([inner (first kids)]
+             [tag (any-tree-tag inner)])
+        (cond [(eq? tag 'signed_number)
+               ;; signed_number: NUMBER or '-' NUMBER — as raw token children
+               (define raw (any-tree-children inner))
+               (define num-tok (for/or ([c raw] #:when (and (not (cst-node? c)) (not (null? c)) (not (symbol? c)))) c))
+               (if num-tok
+                   (uir-pat-literal (uir-number (tk-value num-tok)))
+                   (uir-pat-literal (uir-symbol "?num")))]
+              [(eq? tag 'complex_number)
+               (uir-pat-literal (lower-expr inner tk-type tk-value))]
+               [(eq? tag 'strings)
+                ;; Extract STRING token value from strings node (has STRING tokens in list child)
+                (define str-tok
+                  (for/or ([c (any-tree-children inner)]
+                           #:when (list? c))
+                    (for/or ([item c]
+                             #:when (with-handlers ([exn:fail? (λ _ #f)]) (tk-type item) #t))
+                      (and (eq? (tk-type item) 'STRING) (tk-value item)))))
+                (if str-tok
+                    (uir-pat-literal (uir-string (unquote-string str-tok)))
+                    (uir-pat-literal (uir-symbol "?")))]
+              [else (catch-literal-token cst tk-type tk-value)]))))
+
+(define (catch-literal-token cst tk-type tk-value)
+  (define raw (any-tree-children cst))
+  (define first-tok
+    (for/or ([c raw]
+             #:when (and (not (cst-node? c)) (not (null? c)) (not (symbol? c))))
+      (cons (tk-type c) (tk-value c))))
+  (if first-tok
+      (match (car first-tok)
+        ['NONE (uir-pat-literal (uir-symbol "None"))]
+        ['TRUE (uir-pat-literal (uir-bool #t))]
+        ['FALSE (uir-pat-literal (uir-bool #f))]
+        [_ (uir-symbol (format "?lit-tok-~a" (car first-tok)))])
+      (uir-symbol "?lit-unknown")))
+
+;; capture_pattern: pattern_capture_target
+;; NOTE: wildcard_pattern '_' is lexed as NAME, so _ always enters as capture_pattern
+(define (lower-capture-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (define target (if (pair? kids) (first kids) #f))
+  (define target-kids (if target (node-children target) '()))
+  (define name-node (if (pair? target-kids) (first target-kids) #f))
+  (define name-uir (if name-node (lower-name name-node tk-type tk-value) (uir-symbol "?")))
+  (define sym-name (if (uir-var? name-uir) (uir-symbol-name (uir-var-name name-uir)) (uir-symbol-name name-uir)))
+  (if (equal? sym-name "_")
+      (uir-pat-wildcard)
+      (uir-pat-capture (if (uir-var? name-uir) (uir-var-name name-uir) name-uir))))
+
+;; value_pattern: dotted lookup like SomeClass.ATTR
+(define (lower-value-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-pat-value (uir-symbol "?"))
+      (uir-pat-value (lower-get-path (first kids) tk-type tk-value))))
+
+;; sequence_pattern: '[' maybe_sequence_pattern? ']'
+(define (lower-sequence-pattern cst tk-type tk-value)
+  (define maybe-seq (for/or ([c (node-children cst)]
+                              #:when (eq? (any-tree-tag c) 'maybe_sequence_pattern))
+                       c))
+  (if maybe-seq
+      (lower-maybe-sequence-pattern maybe-seq tk-type tk-value)
+      (uir-pat-sequence '())))
+
+(define (lower-maybe-sequence-pattern cst tk-type tk-value)
+  (define (collect-elems xs)
+    (apply append
+           (for/list ([x xs])
+             (cond [(and (cst-node? x) (eq? (any-tree-tag x) 'maybe_star_pattern))
+                    (list (lower-maybe-star-pattern x tk-type tk-value))]
+                   [(and (cst-node? x) (eq? (any-tree-tag x) 'maybe_sequence_pattern))
+                    (uir-pat-sequence-elements (lower-maybe-sequence-pattern x tk-type tk-value))]
+                   [(cst-node? x) (collect-elems (any-tree-children x))]
+                   [(list? x) (collect-elems x)]
+                   [else '()]))))
+  (uir-pat-sequence (collect-elems (any-tree-children cst))))
+
+(define (lower-maybe-star-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-null)
+      (let ([inner (first kids)])
+        (if (eq? (any-tree-tag inner) 'star_pattern)
+            (lower-star-pattern inner tk-type tk-value)
+            (lower-pattern inner tk-type tk-value)))))
+
+;; star_pattern: '*' pattern_capture_target | '*' wildcard_pattern
+(define (lower-star-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-pat-star #f)
+      (let ([inner (first kids)])
+        (if (eq? (any-tree-tag inner) 'wildcard_pattern)
+            (uir-pat-star #f)
+            ;; pattern_capture_target
+            (let* ([tn (node-children inner)]
+                   [name-node (if (pair? tn) (first tn) #f)])
+              (uir-pat-star (if name-node (lower-name name-node tk-type tk-value) #f)))))))
+
+;; mapping_pattern: '{' [items_pattern] '}'
+(define (lower-mapping-pattern cst tk-type tk-value)
+  (define items (for/or ([c (node-children cst)]
+                          #:when (eq? (any-tree-tag c) 'items_pattern))
+                   c))
+  (if items
+      (lower-items-pattern items tk-type tk-value)
+      (uir-pat-mapping '() #f)))
+
+(define (lower-items-pattern cst tk-type tk-value)
+  (define raw-kids (any-tree-children cst))
+  (define entries '())
+  (define rest #f)
+  (define current-key #f)
+  (for ([c raw-kids])
+    (cond [(and current-key (cst-node? c) (eq? (any-tree-tag c) 'pattern))
+           (set! entries (cons (cons current-key (lower-pattern c tk-type tk-value)) entries))
+           (set! current-key #f)]
+          [(cst-node? c) (set! current-key (lower-pattern c tk-type tk-value))]
+          [(and (not (null? c)) (not (symbol? c)))
+           (define tt (tk-type c))
+           (when (eq? tt 'DOUBLESTAR)
+             (set! current-key 'double-star))]))
+  ;; If we ended with a key but no value, it's a double-star pattern
+  (when (eq? current-key 'double-star)
+    (set! current-key #f)
+    (set! rest #t))
+  (uir-pat-mapping (reverse entries) (if rest (uir-pat-double-star (uir-symbol "?")) #f)))
+
+;; class_pattern: name_or_attr '(' [patterns] [keyword_patterns] ')'
+(define (lower-class-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (define cls-path
+    (if (pair? kids)
+        (lower-get-path (first kids) tk-type tk-value)
+        (uir-symbol "?")))
+  (define positional '())
+  (define keyword '())
+  (for ([c (rest kids)])
+    (match (any-tree-tag c)
+      ['patterns (set! positional (map (λ (p) (lower-pattern p tk-type tk-value)) (node-children c)))]
+      ['keyword_patterns (set! keyword (lower-keyword-patterns c tk-type tk-value))]
+      [else (void)]))
+  (uir-pat-class cls-path positional keyword))
+
+(define (lower-keyword-patterns cst tk-type tk-value)
+  (map lower-keyword-pattern (node-children cst)))
+
+(define (lower-keyword-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (define key (if (pair? kids) (lower-name (first kids) tk-type tk-value) (uir-symbol "?")))
+  (define val (if (>= (length kids) 2) (lower-pattern (second kids) tk-type tk-value) (uir-null)))
+  (cons key val))
+
+;; group_pattern: '(' as_pattern ')'
+(define (lower-group-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-pat-group (uir-null))
+      (let ([inner (first kids)])
+        (uir-pat-group (if (eq? (any-tree-tag inner) 'as_pattern)
+                           (lower-as-pattern inner tk-type tk-value)
+                           (lower-pattern inner tk-type tk-value))))))
+
+;; as_pattern: or_pattern 'as' pattern_capture_target
+(define (lower-as-pattern cst tk-type tk-value)
+  (define kids (node-children cst))
+  (define or-pat (if (pair? kids) (first kids) #f))
+  (define target
+    (for/or ([c (node-children cst)]
+             #:when (eq? (any-tree-tag c) 'pattern_capture_target))
+      c))
+  (define name
+    (if target
+        (let* ([tn (node-children target)]
+               [name-node (if (pair? tn) (first tn) #f)])
+          (if name-node (lower-name name-node tk-type tk-value) (uir-symbol "?")))
+        (uir-symbol "?")))
+  (uir-pat-as (if or-pat (lower-or-pattern or-pat tk-type tk-value) (uir-null)) name))
+
+;; open_sequence_pattern: maybe_star_pattern ',' maybe_sequence_pattern?
+(define (lower-open-sequence cst tk-type tk-value)
+  (define (collect-elems xs)
+    (apply append
+           (for/list ([x xs])
+             (cond [(and (cst-node? x) (eq? (any-tree-tag x) 'maybe_star_pattern))
+                    (list (lower-maybe-star-pattern x tk-type tk-value))]
+                   [(and (cst-node? x) (eq? (any-tree-tag x) 'maybe_sequence_pattern))
+                    (uir-pat-sequence-elements (lower-maybe-sequence-pattern x tk-type tk-value))]
+                   [(cst-node? x) (collect-elems (any-tree-children x))]
+                   [(list? x) (collect-elems x)]
+                   [else '()]))))
+  (uir-pat-sequence (collect-elems (any-tree-children cst))))
+
+(define (flatten-sequence-patterns elems)
+  (apply append
+         (for/list ([e elems])
+           (if (uir-pat-sequence? e)
+               (uir-pat-sequence-elements e)
+               (list e)))))
+
+;; Helper: lower a dotted_name to uir-symbol or uir-get chain
+(define (lower-get-path cst tk-type tk-value)
+  (define kids (node-children cst))
+  (if (null? kids)
+      (uir-symbol "?")
+      (let* ([first-name (first kids)]
+             [nm (lower-name first-name tk-type tk-value)])
+        (if (= (length kids) 1)
+            nm
+            (uir-get nm (lower-name (second kids) tk-type tk-value))))))
+
 ;; ── Try/except/finally ────────────────────────────────────────────
 
 ;; Helper: lower an except_clause into (list exception-type exception-name body)
@@ -1068,17 +1438,132 @@
   (define toks (cst-tokens-deep cst tk-type tk-value))
   (define name (for/or ([t toks] #:when (eq? (first t) 'NAME)) (second t)))
   (define kids (node-children cst))
-  ;; funcdef: 'def' NAME parameters ':' suite
+  ;; funcdef: 'def' NAME parameters ('->' test)? ':' suite
+  ;; But node-children gives: name, parameters, (optional group with '->' test), suite
   (define params-node (findf (λ (k) (eq? (any-tree-tag k) 'parameters)) kids))
   (define suite-node (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids))
+  ;; return type annotation: group node containing ARROW token + test
+  (define return-type-node
+    (for/or ([k kids])
+      (and (eq? (any-tree-tag k) 'group)
+           (let ([gk (node-children k)])
+             (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                  ;; Check for ARROW token in raw children
+                  (for/or ([rc (any-tree-children k)])
+                    (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                         (with-handlers ([exn:fail? (lambda (_) #f)])
+                           (eq? (tk-type rc) 'ARROW))))
+                  (first gk))))))
   (define params (if params-node (lower-parameters params-node tk-type tk-value) '()))
   (define body (if suite-node (lower-suite suite-node tk-type tk-value) (uir-null)))
-  (uir-fn (if name (uir-symbol name) #f) params body))
+  (define return-type (if return-type-node
+                          (lower-expr return-type-node tk-type tk-value)
+                          #f))
+  (uir-fn (if name (uir-symbol name) #f) params body return-type))
 
 (define (lower-parameters cst tk-type tk-value)
-  (define toks (cst-tokens cst tk-type tk-value))
-  (for/list ([t toks] #:when (eq? (first t) 'NAME))
-    (uir-symbol (second t))))
+  ;; parameters: '(' typedargslist? ')'
+  ;; typedargslist: tfpdef (',' tfpdef ('=' test)?)* ','?
+  ;; Default values appear as siblings of tfpdef in comma-separated groups
+  (define result '())
+  (define pending-default #f)  ;; default waiting for next tfpdef
+  (let walk ([node cst])
+    (cond [(cst-node? node)
+           (cond [(eq? (any-tree-tag node) 'tfpdef)
+                  (define param (lower-tfpdef node tk-type tk-value))
+                  (when pending-default
+                    (set! param (uir-typed-param (uir-typed-param-name param)
+                                                 (uir-typed-param-type param)
+                                                 pending-default))
+                    (set! pending-default #f))
+                  (set! result (cons param result))]
+                 [else
+                  ;; Check for default group (sibling of tfpdef): group with ASSIGN+test
+                  (define raw-kids (any-tree-children node))
+                  (for ([c raw-kids])
+                    (cond [(cst-node? c) (walk c)]
+                          [(and (list? c) (pair? c)) (for-each walk c)]
+                          [else (void)]))
+                  ;; Also check if THIS node is a default group
+                  (when (and (eq? (any-tree-tag node) 'group)
+                             (pair? result))
+                    (define gk (node-children node))
+                    (when (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                               (for/or ([rc (any-tree-children node)])
+                                 (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                                      (with-handlers ([exn:fail? (lambda (_) #f)])
+                                        (eq? (tk-type rc) 'ASSIGN)))))
+                      (set! pending-default (lower-expr (first gk) tk-type tk-value))))])]
+          [(and (list? node) (pair? node)) (for-each walk node)]
+          [else (void)]))
+  ;; After walk, apply any pending default to the last param
+  (define final-result
+    (if pending-default
+        (let ([last (car result)])
+          (cons (uir-typed-param (uir-typed-param-name last)
+                                 (uir-typed-param-type last)
+                                 pending-default)
+                (cdr result)))
+        result))
+  (reverse final-result))
+
+(define (lower-tfpdef cst tk-type tk-value)
+  ;; tfpdef: name (':' test)? ('=' test)?
+  ;; Or vfpdef (lambda params): name (':' test)? ('=' test)?
+  (define raw-kids (any-tree-children cst))
+  ;; Find name: first NAME token or name node child
+  (define name
+    (for/or ([c raw-kids])
+      (cond [(and (cst-node? c) (eq? (any-tree-tag c) 'name))
+             (let ([nt (cst-tokens c tk-type tk-value)])
+               (if (pair? nt) (second (car nt)) #f))]
+            [(and (not (cst-node? c)) (not (null? c)) (not (eq? c 'none))
+                  (with-handlers ([exn:fail? (lambda (_) #f)])
+                    (eq? (tk-type c) 'NAME)))
+             (tk-value c)]
+            [else #f])))
+  ;; Find type annotation: group containing COLON + test
+  (define type-expr
+    (for/or ([c raw-kids])
+      (and (cst-node? c) (eq? (any-tree-tag c) 'group)
+           (let ([gk (node-children c)])
+             (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                  ;; Check for COLON token
+                  (for/or ([rc (any-tree-children c)])
+                    (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                         (with-handlers ([exn:fail? (lambda (_) #f)])
+                           (eq? (tk-type rc) 'COLON))))
+                  (lower-expr (first gk) tk-type tk-value))))))
+  ;; Find default: group containing ASSIGN + test
+  (define default-expr
+    (for/or ([c raw-kids])
+      (and (cst-node? c) (eq? (any-tree-tag c) 'group)
+           (let ([gk (node-children c)])
+             (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                  ;; Check for ASSIGN token
+                  (for/or ([rc (any-tree-children c)])
+                    (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                         (with-handlers ([exn:fail? (lambda (_) #f)])
+                           (eq? (tk-type rc) 'ASSIGN))))
+                  (lower-expr (first gk) tk-type tk-value))))))
+  ;; Also detect default in the 3rd child of vfpdef (list-wrapped group)
+  (define default-from-list
+    (for/or ([c raw-kids])
+      (and (list? c) (pair? c)
+           (for/or ([cc c])
+             (and (cst-node? cc) (eq? (any-tree-tag cc) 'group)
+                  (let ([gk (node-children cc)])
+                    (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                         (for/or ([rc (any-tree-children cc)])
+                           (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                                (with-handlers ([exn:fail? (lambda (_) #f)])
+                                  (eq? (tk-type rc) 'ASSIGN))))
+                         (lower-expr (first gk) tk-type tk-value))))))))
+  (if (or type-expr (or default-expr default-from-list))
+      (uir-typed-param (uir-symbol (or name "?"))
+                       (or type-expr #f)
+                       (or default-expr default-from-list #f))
+      (uir-symbol (or name "?"))))
 
 ;; Lower lambdef into uir-fn (anonymous function)
 (define (lower-lambdef cst tk-type tk-value)
@@ -1110,7 +1595,7 @@
                  (lower-expr (car c) tk-type tk-value)
                  #f)]
             [else #f])))
-  (uir-fn #f (or params '()) (or body-expr (uir-null))))
+  (uir-fn #f (or params '()) (or body-expr (uir-null)) #f))
 
 ;; Lower varargslist for lambda parameters (group of vfpdef nodes)
 (define (lower-varargslist cst tk-type tk-value)
@@ -1125,13 +1610,111 @@
       (lower-simple-stmts (first kids) tk-type tk-value)))
 
 (define (lower-classdef cst tk-type tk-value)
-  (define toks (cst-tokens cst tk-type tk-value))
-  (define name (for/or ([t toks] #:when (eq? (first t) 'NAME)) (second t)))
+  ;; classdef: 'class' name ('(' arglist? ')')? ':' block
+  ;; block: NEWLINE INDENT stmt+ DEDENT
+  (define toks (cst-tokens-deep cst tk-type tk-value))
+  (define name
+    (for/or ([t toks] #:when (eq? (first t) 'NAME)) (second t)))
   (define kids (node-children cst))
-  (define suite-node (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids))
-  (define body (if suite-node (lower-suite suite-node tk-type tk-value) (uir-null)))
-  (uir-class (uir-symbol (or name "?class")) (uir-null) '()
-             (list (uir-method (uir-symbol "__init__") '() body 'public))))
+  (define suite-node (or (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids)
+                         (findf (λ (k) (eq? (any-tree-tag k) 'block)) kids)))
+  ;; Extract superclass from arglist: group node with '(' arglist? ')'
+  (define super-node
+    (for/or ([k kids])
+      (and (eq? (any-tree-tag k) 'group)
+           (let ([gk (node-children k)])
+             (and (pair? gk) (eq? (any-tree-tag (first gk)) 'arglist)
+                  ;; Get first test from arglist → argument → test
+                  (let* ([al (first gk)]
+                         [al-kids (node-children al)])
+                    (and (pair? al-kids)
+                         (let ([arg (first al-kids)])
+                           (and (eq? (any-tree-tag arg) 'argument)
+                                (let ([arg-kids (node-children arg)])
+                                  (and (pair? arg-kids)
+                                       (let ([test-node (first arg-kids)])
+                                         (eq? (any-tree-tag test-node) 'test)
+                                         test-node))))))))))))
+  (define super (if super-node (lower-expr super-node tk-type tk-value) (uir-null)))
+  ;; Walk the suite/block to extract fields (assignments) and methods (funcdef)
+  (define fields '())
+  (define methods '())
+  (define (walk stmt)
+    (define tag (any-tree-tag stmt))
+    (cond [(eq? tag 'simple_stmts)
+           ;; Contains simple_stmt → group → expr_stmt or pass_stmt
+           (let ([ss-kids (node-children stmt)])
+             (when (pair? ss-kids)
+               (define inner (first ss-kids)) ;; simple_stmt
+               (when (and (cst-node? inner) (eq? (any-tree-tag inner) 'simple_stmt))
+                 (define sg (node-children inner))
+                 (when (pair? sg)
+                   (define g (first sg)) ;; group
+                   (when (and (cst-node? g) (eq? (any-tree-tag g) 'group))
+                     (define gk (node-children g))
+                     (when (pair? gk)
+                       (match (any-tree-tag (first gk))
+                         ['expr_stmt
+                          ;; Extract field name from first test
+                          (define xk (node-children (first gk)))
+                          (when (and (pair? xk) (>= (length xk) 2))
+                            (define lhs (first xk))
+                            (define rhs (second xk))
+                            ;; Get field name as string
+                            (define fname
+                              (let ([lhs-toks (cst-tokens-deep lhs tk-type tk-value)])
+                                (for/or ([t lhs-toks] #:when (eq? (first t) 'NAME)) (second t))))
+                            (cond [(and (cst-node? rhs) (eq? (any-tree-tag rhs) 'group)
+                                        (let ([rgk (node-children rhs)])
+                                          (and (pair? rgk)
+                                               (eq? (any-tree-tag (first rgk)) 'annassign))))
+                                   ;; Annotated field: x: int = 5
+                                   (let* ([ann (first (node-children rhs))]
+                                          [ann-kids (node-children ann)]
+                                          [type-node (and (pair? ann-kids) (first ann-kids))]
+                                          [type-expr (if type-node (lower-expr type-node tk-type tk-value) (uir-null))]
+                                          [init-node (and (>= (length ann-kids) 2)
+                                                          (let ([ig (second ann-kids)])
+                                                            (and (cst-node? ig)
+                                                                 (let ([igk (node-children ig)])
+                                                                   (and (pair? igk) (first igk))))))]
+                                          [init (if init-node (lower-expr init-node tk-type tk-value) (uir-null))])
+                                      (set! fields (cons (uir-field (uir-symbol (or fname "?")) type-expr init) fields)))]
+                                   [else
+                                    ;; Plain field: x = 1
+                                    (define rhs-value (find-rhs-in-children (list rhs)))
+                                    (set! fields (cons (uir-field (uir-symbol (or fname "?")) (uir-null)
+                                                                  (if rhs-value
+                                                                      (lower-expr rhs-value tk-type tk-value)
+                                                                      (uir-null))) fields))]))]
+                         ['pass_stmt (void)]
+                         [_ (void)])))))))]
+          [(eq? tag 'compound_stmt)
+           ;; Contains funcdef or classdef
+           (define cc (node-children stmt))
+           (when (pair? cc)
+             (match (any-tree-tag (first cc))
+               ['funcdef
+                (set! methods (cons
+                               (lower-method (first cc) tk-type tk-value)
+                               methods))]
+               ['classdef (void)]
+               [_ (void)]))]
+          [(eq? tag 'stmt)
+           (for ([c (node-children stmt)]) (when (cst-node? c) (walk c)))]
+          [else (void)]))
+  (when suite-node
+    (for ([k (any-tree-children suite-node)])
+      (cond [(cst-node? k) (walk k)]
+            [(and (list? k) (pair? k)) (for-each (lambda (cc) (when (cst-node? cc) (walk cc))) k)]
+            [else (void)])))
+  (uir-class (uir-symbol (or name "?class")) super
+             (reverse fields) (reverse methods)))
+
+(define (lower-method cst tk-type tk-value)
+  ;; funcdef inside a class becomes a method
+  (define fn (lower-funcdef cst tk-type tk-value))
+  (uir-method (uir-fn-name fn) (uir-fn-params fn) (uir-fn-body fn) 'public))
 
 (define (lower-block-or-stmt cst tk-type tk-value)
   (define tag (any-tree-tag cst))
@@ -1140,13 +1723,22 @@
     [(eq? tag 'block) (lower-block cst tk-type tk-value)]
     [(eq? tag 'simple_stmts) (lower-simple-stmts cst tk-type tk-value)]
     [(eq? tag 'simple_stmt) (lower-simple-stmt cst tk-type tk-value)]
+    [(eq? tag 'compound_stmt) (lower-compound cst tk-type tk-value)]
     [else (lower-stmt cst tk-type tk-value)]))
 
 (define (lower-block cst tk-type tk-value)
-  (define kids (node-children cst))
-  (if (or (null? kids) (>= (length kids) 2))
-      (uir-block (map (λ (k) (lower-block-or-stmt k tk-type tk-value)) kids))
-      (lower-block-or-stmt (first kids) tk-type tk-value)))
+  ;; block: NEWLINE INDENT stmt+ DEDENT
+  ;; stmt+ is list-wrapped, so we must look inside list children
+  (define all-raw (any-tree-children cst))
+  (define stmt-kids
+    (apply append
+           (for/list ([c all-raw])
+             (cond [(cst-node? c) (list c)]
+                   [(list? c) (filter cst-node? c)]
+                   [else '()]))))
+  (if (or (null? stmt-kids) (>= (length stmt-kids) 2))
+      (uir-block (map (λ (k) (lower-block-or-stmt k tk-type tk-value)) stmt-kids))
+      (lower-block-or-stmt (first stmt-kids) tk-type tk-value)))
 
 (module+ main
   (displayln "racklr/lower-python — Python3 CST → UIR lowering loaded."))

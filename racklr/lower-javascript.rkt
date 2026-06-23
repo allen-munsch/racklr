@@ -1,7 +1,7 @@
 #lang racket
 
-(require "tree.rkt"
-         "uir.rkt")
+(require racklr/tree
+         racklr/uir)
 
 (provide lower-program)
 
@@ -165,7 +165,7 @@
     (if fpl
         (lower-formal-params fpl tk-type tk-value)
         '()))
-  (define fn-uir (uir-fn #f params body))
+  (define fn-uir (uir-fn #f params body #f))
   (cond [is-async (uir-set! name (uir-call (uir-symbol "async-fn") (list fn-uir)))]
         [is-generator (uir-set! name (uir-call (uir-symbol "gen-fn") (list fn-uir)))]
         [else (uir-set! name fn-uir)]))
@@ -615,19 +615,19 @@
        (define getter-name (lower-getter-setter-name getter tk-type tk-value))
        (define body (lower-fn-body fb tk-type tk-value))
        (set! entries (cons (cons (uir-string (string-append "get " getter-name))
-                                 (uir-fn #f (quote ()) body))
+                                 (uir-fn #f (quote ()) body #f))
                            entries))]
       [setter
        (define setter-name (lower-getter-setter-name setter tk-type tk-value))
        (define params (list (uir-symbol "v")))
        (define body (lower-fn-body fb tk-type tk-value))
        (set! entries (cons (cons (uir-string (string-append "set " setter-name))
-                                 (uir-fn #f params body))
+                                 (uir-fn #f params body #f))
                            entries))]
       [(and pname fb (not se))
        (define key (uir-string (lower-identifier-name pname tk-type tk-value)))
        (define body (lower-fn-body fb tk-type tk-value))
-       (set! entries (cons (cons key (uir-fn #f (quote ()) body)) entries))]
+       (set! entries (cons (cons key (uir-fn #f (quote ()) body #f)) entries))]
       [(and pname se)
        (let ([key (uir-string (lower-identifier-name pname tk-type tk-value))]
              [val (lower-single-expression se tk-type tk-value)])

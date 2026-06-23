@@ -1,7 +1,7 @@
 #lang racket
 
 (require rackunit
-         "uir.rkt")
+         racklr/uir)
 
 ;; ── Constructors ───────────────────────────────────────────────────
 
@@ -51,7 +51,8 @@
   (define f (uir-fn #f (list (uir-symbol "x") (uir-symbol "y"))
                     (uir-call (uir-var (uir-symbol "+"))
                               (list (uir-var (uir-symbol "x"))
-                                    (uir-var (uir-symbol "y"))))))
+                                    (uir-var (uir-symbol "y"))))
+                    #f))
   (check-true (uir? f) "uir-fn satisfies uir?")
   (check-equal? (uir-tag f) 'fn "uir-fn tag is 'fn")
   (check-equal? (length (uir-fn-params f)) 2 "uir-fn has 2 params")
@@ -213,7 +214,7 @@
 
 (define (test-event-construction)
   (define e (uir-event (uir-string "submit")
-                       (uir-fn #f (list (uir-symbol "e")) (uir-null))))
+                       (uir-fn #f (list (uir-symbol "e")) (uir-null) #f)))
   (check-true (uir? e) "uir-event satisfies uir?")
   (check-equal? (uir-tag e) 'event "uir-event tag is 'event")
   (check-equal? (uir-string-value (uir-event-name e)) "submit" "uir-event name"))
@@ -302,10 +303,10 @@
     (check-equal? (length (uir-record-entries u2)) 1 "uir-record round-trip entries"))
 
   ;; Fn
-  (let* ([u1 (uir-fn #f (list (uir-symbol "x")) (uir-var (uir-symbol "x")))]
+  (let* ([u1 (uir-fn #f (list (uir-symbol "x")) (uir-var (uir-symbol "x")) #f)]
          [s1 (uir->sexp u1)]
          [u2 (sexp->uir s1)])
-    (check-equal? s1 '(fn #f ((symbol "x")) (var (symbol "x"))) "uir-fn sexp")
+    (check-equal? s1 '(fn #f ((symbol "x")) (var (symbol "x")) #f) "uir-fn sexp")
     (check-true (uir-fn? u2) "uir-fn round-trip"))
 
   ;; Call
@@ -436,7 +437,7 @@
     (check-equal? (uir-string-value (uir-attribute-value u2)) "box" "uir-attribute round-trip value"))
 
   ;; Event
-  (let* ([u1 (uir-event (uir-string "click") (uir-fn #f '() (uir-null)))]
+  (let* ([u1 (uir-event (uir-string "click") (uir-fn #f '() (uir-null) #f))]
          [s1 (uir->sexp u1)]
          [u2 (sexp->uir s1)])
     (check-true (uir-event? u2) "uir-event round-trip type"))
@@ -499,7 +500,7 @@
   (check-equal? (uir-tag (uir-list '())) 'list)
   (check-equal? (uir-tag (uir-record '())) 'record)
   (check-equal? (uir-tag (uir-symbol "x")) 'symbol)
-  (check-equal? (uir-tag (uir-fn #f '() (uir-null))) 'fn)
+  (check-equal? (uir-tag (uir-fn #f '() (uir-null) #f)) 'fn)
   (check-equal? (uir-tag (uir-call (uir-null) '())) 'call)
   (check-equal? (uir-tag (uir-let (uir-symbol "x") (uir-null) (uir-null))) 'let)
   (check-equal? (uir-tag (uir-var (uir-symbol "x"))) 'var)
