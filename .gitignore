@@ -13,3 +13,9 @@ grammars-v4/
 compiled/
 # Debug / scratch files
 _*.rkt
+# Stray files not in release scope
+gen-java-test.rkt
+ideas.txt
+manifest.yaml
+# Local tool sessions
+.dirge/
