@@ -67,6 +67,7 @@
  uir-style uir-style? uir-style-styles
  uir-effect uir-effect? uir-effect-deps uir-effect-body
  uir-state uir-state? uir-state-name uir-state-init
+ uir-jsx-expr uir-jsx-expr? uir-jsx-expr-content
  ;; Predicate
  uir? uir-tag
  ;; Serialization
@@ -247,6 +248,10 @@
 ;; Reactive state cell: name and initial value
 (struct uir-state (name init) #:transparent)
 
+;; JSX embedded expression {expression-content} — raw text passthrough
+;; Used when the lowering pass captures opaque expression text from JSX
+(struct uir-jsx-expr (content) #:transparent)
+
 ;; ── Predicate ──────────────────────────────────────────────────────
 
 (define (uir? v)
@@ -294,6 +299,7 @@
       (uir-style? v)
       (uir-effect? v)
        (uir-state? v)
+       (uir-jsx-expr? v)
        (uir-match? v)
        (uir-case? v)
        (uir-pat-literal? v)
@@ -354,6 +360,7 @@
         [(uir-style? v)      'style]
         [(uir-effect? v)     'effect]
         [(uir-state? v)      'state]
+        [(uir-jsx-expr? v)  'jsx-expr]
         [(uir-match? v)          'match]
         [(uir-case? v)           'case]
         [(uir-pat-literal? v)    'pat-literal]
@@ -485,6 +492,7 @@
                                   ,(uir->sexp (uir-effect-body v)))]
         [(uir-state? v) `(state ,(uir->sexp (uir-state-name v))
                                 ,(uir->sexp (uir-state-init v)))]
+        [(uir-jsx-expr? v) `(jsx-expr ,(uir-jsx-expr-content v))]
         [else (error 'uir->sexp "not a UIR node: ~e" v)]))
 
 (define (sexp->uir s)
@@ -574,7 +582,8 @@
                     es))]
     [`(effect ,ds ,body) (uir-effect (map sexp->uir ds) (sexp->uir body))]
     [`(state ,n ,init) (uir-state (sexp->uir n) (sexp->uir init))]
-    [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
+     [`(jsx-expr ,content) (uir-jsx-expr content)]
+     [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
 
 (require json)
 
@@ -587,7 +596,7 @@
 (define uir-tag-set (set 'null 'bool 'number 'string 'fstring 'list 'record 'symbol
                           'fn 'call 'let 'var 'set! 'if 'block 'return 'for-each 'try 'with 'await 'yield 'decorated 'get
                           'class 'method 'field 'new 'interface 'module 'import 'export
-                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state))
+                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr))
 
 (define (uir-jsexpr->sexp j)
   (match j

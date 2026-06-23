@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [0.1.0rc1] - 2025-07-17
+
+### Added
+
+- JSX→React.createElement transpilation pipeline:
+  - Cleaned JSX grammar (`grammars-v4/javascript/jsx-cleaned/`)
+  - `lower-jsx.rkt` — CST→UIR lowering (7 lowering functions)
+  - `emit-jsx.rkt` — UIR→React.createElement emitter
+  - 4 new UIR struct types: `uir-element`, `uir-attribute`, `uir-jsx-expr`, `uir-text-node`
+  - 42 JSX tests (`gen-jsx-test.rkt`) covering tokenize, parse, lower, and emit
+
 ## [0.1.0] - 2025-06-14
 
 ### Added

@@ -396,8 +396,13 @@
            [else (loop (+ i 1))])))")
 
 (define (gen-lexer-matchers all-lexer)
+  (define seen (make-hash))
   (string-join
-   (map gen-one-lexer-matcher all-lexer)
+   (for/list ([rule all-lexer]
+              #:when (let ([name (mangle (any-tree-text (first (any-tree-children rule))))])
+                       (and (not (hash-has-key? seen name))
+                            (begin (hash-set! seen name #t) #t))))
+     (gen-one-lexer-matcher rule))
    "\n"))
 
 (define (gen-one-lexer-matcher rule)
@@ -457,7 +462,11 @@
     [(eq? tag 'optional) (format "(lambda (p i) (mopt ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
     [(eq? tag 'negated)
      (define child (first (any-tree-children elem)))
-     (format "(lambda (p i) (mnot ~a p i))" (gen-match-elem child))]
+     ;; If negation wraps a quantifier, swap: ~X+ => (~X)+
+     (define child-tag (any-tree-tag child))
+     (if (memq child-tag '(star plus optional))
+         (gen-match-elem (node child-tag (list (node 'negated (any-tree-children child)))))
+         (format "(lambda (p i) (mnot ~a p i))" (gen-match-elem child)))]
     [(eq? tag 'group)
       (define sub-alts (any-tree-children elem))
       (format "(lambda (p i) ~a)" (gen-match-alt sub-alts))]
