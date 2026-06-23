@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Standard Racket collection layout: source in `racklr/`, tests in `racklr-test/`
 - Package metadata (`info.rkt`) with multi-collection declaration
+- GPL-3.0-or-later license (`LICENSE`)
 - `.gitignore` entries for generated parser artifacts, Racket bytecode, and vendored grammars
 - `CHANGELOG.md` (this file)
 
