@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TypeScript Demo</title>
+</head>
+<body>
+  <script type="module">
+function greet(name) { return "Hello, " + name + "!"; }
+let heading = greet("World");
+let headingEl = document.createElement("h1");
+headingEl.textContent = heading;
+document.body.appendChild(headingEl);
+let counter = 0;
+let counterDiv = document.createElement("div");
+counterDiv.id = "counter";
+counterDiv.textContent = "Counter: " + counter;
+document.body.appendChild(counterDiv);
+let btn = document.createElement("button");
+btn.textContent = "Click me";
+btn.onclick = function() { counter = counter + 1;
+let el = document.getElementById("counter");
+if (el) { el.textContent = "Counter: " + counter; } else {  } };
+document.body.appendChild(btn);
+</script>
+</body>
+</html>

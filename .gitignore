@@ -19,3 +19,6 @@ ideas.txt
 manifest.yaml
 # Local tool sessions
 .dirge/
+# npm/esbuild
+node_modules/
+package-lock.json

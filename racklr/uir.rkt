@@ -1,256 +1,15 @@
 #lang racket
 
+(require "uir/types.rkt")
 (require racklr/tree)
 
 (provide
- ;; Tier 0: Core computational IR
- uir-null uir-null?
- uir-bool uir-bool? uir-bool-value
- uir-number uir-number? uir-number-value
- uir-string uir-string? uir-string-value
- uir-fstring uir-fstring? uir-fstring-value
- uir-list uir-list? uir-list-items
- uir-record uir-record? uir-record-entries
- uir-symbol uir-symbol? uir-symbol-name
- ;; Functions and control flow
-  uir-fn uir-fn? uir-fn-name uir-fn-params uir-fn-body
-  uir-fn-return-type
-  uir-typed-param uir-typed-param? uir-typed-param-name uir-typed-param-type uir-typed-param-default
- uir-call uir-call? uir-call-callee uir-call-args
- uir-let uir-let? uir-let-name uir-let-value uir-let-body
-  uir-var uir-var? uir-var-name
-  uir-set! uir-set!? uir-set!-name uir-set!-value
-  uir-ann-set! uir-ann-set!? uir-ann-set!-lhs uir-ann-set!-type uir-ann-set!-value
-  uir-if uir-if? uir-if-test uir-if-then uir-if-else
- uir-block uir-block? uir-block-stmts
- uir-return uir-return? uir-return-value
-  uir-for-each uir-for-each? uir-for-each-var uir-for-each-iterable uir-for-each-body uir-for-each-else-body
-  uir-while uir-while? uir-while-test uir-while-body uir-while-else-body
-  uir-try uir-try? uir-try-body uir-try-catches uir-try-else-body uir-try-finally-body
-  uir-with uir-with? uir-with-items uir-with-body
-  uir-await uir-await? uir-await-expr
-  uir-yield uir-yield? uir-yield-value uir-yield-from?
-  uir-decorated uir-decorated? uir-decorated-decorators uir-decorated-inner
-  uir-get uir-get? uir-get-base uir-get-field
-  uir-paren uir-paren? uir-paren-inner
-  ;; Pattern matching (match/case)
-  uir-match uir-match? uir-match-subject uir-match-cases
-  uir-case uir-case? uir-case-pattern uir-case-guard uir-case-body
-  uir-pat-literal uir-pat-literal? uir-pat-literal-value
-  uir-pat-capture uir-pat-capture? uir-pat-capture-name
-  uir-pat-wildcard uir-pat-wildcard?
-  uir-pat-value uir-pat-value? uir-pat-value-path
-  uir-pat-or uir-pat-or? uir-pat-or-alts
-  uir-pat-as uir-pat-as? uir-pat-as-pattern uir-pat-as-name
-  uir-pat-sequence uir-pat-sequence? uir-pat-sequence-elements
-  uir-pat-star uir-pat-star? uir-pat-star-name
-  uir-pat-mapping uir-pat-mapping? uir-pat-mapping-entries uir-pat-mapping-rest
-  uir-pat-double-star uir-pat-double-star? uir-pat-double-star-name
-  uir-pat-class uir-pat-class? uir-pat-class-cls uir-pat-class-positional uir-pat-class-keyword
-  uir-pat-group uir-pat-group? uir-pat-group-pattern
-  ;; Tier 1: OOP / Module IR
- uir-class uir-class? uir-class-name uir-class-super uir-class-fields uir-class-methods
- uir-method uir-method? uir-method-name uir-method-params uir-method-body uir-method-visibility
- uir-field uir-field? uir-field-name uir-field-type uir-field-init
- uir-new uir-new? uir-new-class uir-new-args
- uir-interface uir-interface? uir-interface-name uir-interface-methods
- uir-module uir-module? uir-module-name uir-module-imports uir-module-exports uir-module-body
- uir-import uir-import? uir-import-source uir-import-names
- uir-export uir-export? uir-export-names
- ;; Tier 2: UI Component IR
- uir-component uir-component? uir-component-name uir-component-props uir-component-states uir-component-effects uir-component-template
- uir-element uir-element? uir-element-tag uir-element-attrs uir-element-children uir-element-events
- uir-attribute uir-attribute? uir-attribute-name uir-attribute-value
- uir-event uir-event? uir-event-name uir-event-handler
- uir-slot uir-slot? uir-slot-name uir-slot-fallback
- uir-text-node uir-text-node? uir-text-node-content
- uir-style uir-style? uir-style-styles
- uir-effect uir-effect? uir-effect-deps uir-effect-body
- uir-state uir-state? uir-state-name uir-state-init
- uir-jsx-expr uir-jsx-expr? uir-jsx-expr-content
+ (all-from-out "uir/types.rkt")
  ;; Predicate
  uir? uir-tag
  ;; Serialization
  uir->sexp sexp->uir
  uir->json json->uir)
-
-;; ── Tier 0: Core Computational IR ──────────────────────────────────
-
-;; Literals
-(struct uir-null () #:transparent)
-(struct uir-bool (value) #:transparent)
-(struct uir-number (value) #:transparent)  ;; string to preserve precision
-(struct uir-string (value) #:transparent)
-(struct uir-fstring (value) #:transparent)  ;; f-string literal
-
-;; Data structures
-(struct uir-list (items) #:transparent)    ;; list of uir?
-(struct uir-record (entries) #:transparent) ;; list of (cons uir-string uir?)
-
-;; Identifiers (for variable references, function names, field keys)
-(struct uir-symbol (name) #:transparent)
-
-;; Functions and control flow
-(struct uir-fn (name params body return-type) #:transparent)  ;; name: #f or uir-symbol, return-type: #f or uir?
-(struct uir-typed-param (name type default) #:transparent)   ;; name: uir-symbol, type/default: #f or uir?
-(struct uir-call (callee args) #:transparent)    ;; callee: uir?, args: (listof uir?)
-(struct uir-let (name value body) #:transparent) ;; name: uir-symbol, value: uir?, body: uir?
-(struct uir-var (name) #:transparent)            ;; name: uir-symbol
-(struct uir-set! (name value) #:transparent)     ;; name: uir-symbol, value: uir?
-;; Annotated assignment: x: int = 5 or x: int (no value)
-(struct uir-ann-set! (lhs type value) #:transparent)  ;; value can be #f for annotation-only
-(struct uir-if (test then else) #:transparent)   ;; test/then/else: all uir?
-(struct uir-block (stmts) #:transparent)         ;; stmts: (listof uir?)
-(struct uir-return (value) #:transparent)        ;; value: uir?
-
-;; For-each loop: for var in iterable: body (else: else-body)
-;; var: uir-symbol, iterable: uir?, body: uir?, else-body: uir? (uir-null if no else)
-(struct uir-for-each (var iterable body else-body) #:transparent)
-
-;; While loop: test, body, optional else-body (uir-null if no else)
-(struct uir-while (test body else-body) #:transparent)
-
-;; Try/catch: try body, catch clauses, optional else and finally
-;; catches: (listof (list exception-type exception-name body))
-;;   exception-type: uir? (uir-null for bare except)
-;;   exception-name: uir-symbol or uir-null
-;; else-body/finally-body: uir? or #f (#f means not specified, uir-null means pass)
-(struct uir-try (body catches else-body finally-body) #:transparent)
-
-;; With statement: context managers + body
-;; items: (listof (list context-expr as-name)) where as-name is uir-symbol or uir-null
-(struct uir-with (items body) #:transparent)
-
-;; Await expression: await expr
-(struct uir-await (expr) #:transparent)
-
-;; Yield expression: yield value (or yield from value)
-;; from?: #t for 'yield from', #f for 'yield'
-(struct uir-yield (value from?) #:transparent)
-
-;; Decorated definition: @deco\ndef foo(): ...
-;; decorators: (listof uir-call) — each decorator is a call expression
-;; inner: uir? — the function or class being decorated
-(struct uir-decorated (decorators inner) #:transparent)
-
-;; Property access or subscript: base.field or base[key]
-;; base: uir? — the object being accessed
-;; field: uir? — uir-string for .attr, any uir for [key]
-(struct uir-get (base field) #:transparent)
-
-;; Parenthesized expression — preserves explicit grouping for round-trip
-(struct uir-paren (inner) #:transparent)
-
-;; ── Match/Case (Python 3.10+) ────────────────────────────────────
-
-;; Match statement: match subject: case pattern [if guard]: body ...
-(struct uir-match (subject cases) #:transparent)     ;; subject: uir?, cases: (listof uir-case)
-(struct uir-case (pattern guard body) #:transparent)  ;; pattern: uir-pat?, guard: #f or uir?, body: uir?
-
-;; Pattern IR — represents destructuring patterns in match/case
-
-;; Literal pattern: case 42: / case "hello": / case None: / case True:
-(struct uir-pat-literal (value) #:transparent)  ;; value: uir? (number, string, boolean, None as uir-symbol)
-
-;; Capture pattern: case x: (binds a variable)
-(struct uir-pat-capture (name) #:transparent)   ;; name: uir-symbol
-
-;; Wildcard pattern: case _:
-(struct uir-pat-wildcard () #:transparent)
-
-;; Value pattern: case SomeClass.ATTR: (dotted name lookup)
-(struct uir-pat-value (path) #:transparent)     ;; path: uir-symbol or uir-get chain
-
-;; OR pattern: case 1 | 2 | 3:
-(struct uir-pat-or (alts) #:transparent)        ;; alts: (listof uir-pat?)
-
-;; AS pattern: case (pat) as name:
-(struct uir-pat-as (pattern name) #:transparent) ;; pattern: uir-pat?, name: uir-symbol
-
-;; Sequence pattern: case [a, b, *rest]: / case (a, b):
-(struct uir-pat-sequence (elements) #:transparent) ;; elements: (listof uir-pat?, may include uir-pat-star)
-
-;; Star pattern: *name or *_
-(struct uir-pat-star (name) #:transparent)       ;; name: uir-symbol or #f for wildcard star
-
-;; Mapping pattern: case {key: val, **rest}:
-(struct uir-pat-mapping (entries rest) #:transparent) ;; entries: (listof (cons uir-pat? uir-pat?)), rest: #f or uir-pat-double-star
-
-;; Double-star pattern: **name
-(struct uir-pat-double-star (name) #:transparent)     ;; name: uir-symbol
-
-;; Class pattern: case ClassName(pos1, pos2, key=val):
-(struct uir-pat-class (cls positional keyword) #:transparent) ;; cls: uir-symbol or uir-get, positional: (listof uir-pat?), keyword: (listof (cons uir-symbol uir-pat?))
-
-;; Group pattern: case (pattern):
-(struct uir-pat-group (pattern) #:transparent)
-
-;; ── Tier 1: OOP / Module IR ───────────────────────────────────────
-
-;; Class definition: name, optional superclass, fields, methods
-;; fields: (listof uir-field), methods: (listof uir-method)
-(struct uir-class (name super fields methods) #:transparent)
-
-;; Method: name, params, body, visibility
-;; visibility: 'public, 'private, or 'protected (Racket symbol)
-(struct uir-method (name params body visibility) #:transparent)
-
-;; Field declaration: name, optional type annotation, initial value (or uir-null)
-(struct uir-field (name type init) #:transparent)
-
-;; Object instantiation: class-name, constructor args
-(struct uir-new (class args) #:transparent)
-
-;; Interface definition: name, abstract method signatures
-(struct uir-interface (name methods) #:transparent)
-
-;; Module: name, imports, exports, body
-(struct uir-module (name imports exports body) #:transparent)
-
-;; Import: source module, imported names (or (uir-symbol "*") for wildcard)
-(struct uir-import (source names) #:transparent)
-
-;; Export: exported names (or (uir-symbol "*") for re-export-all)
-(struct uir-export (names) #:transparent)
-
-;; ── Tier 2: UI Component IR ───────────────────────────────────────
-
-;; Component: name, props, reactive states, effects, template
-;; props/states/effects: list of their respective UIR types
-;; template: uir-element (the root render tree)
-(struct uir-component (name props states effects template) #:transparent)
-
-;; DOM element: tag name, attributes, children, event bindings
-;; attrs: (listof uir-attribute), children: (listof uir-element or uir-text-node or uir-slot)
-;; events: (listof uir-event)
-(struct uir-element (tag attrs children events) #:transparent)
-
-;; HTML attribute: name, static or dynamic value (uir-string or uir-expression)
-(struct uir-attribute (name value) #:transparent)
-
-;; Event binding: e.g., (uir-event "click" (uir-fn ...)) 
-(struct uir-event (name handler) #:transparent)
-
-;; Slot for component children: name and optional fallback content
-(struct uir-slot (name fallback) #:transparent)
-
-;; Plain text content in the DOM
-(struct uir-text-node (content) #:transparent)
-
-;; Inline or referenced styles: styles as (listof (cons uir-string uir?))
-;; This mirrors uir-record for CSS key-value pairs
-(struct uir-style (styles) #:transparent)
-
-;; Reactive effect: dependencies and body (like React useEffect)
-;; deps: list of state references, body: uir-fn or uir-block
-(struct uir-effect (deps body) #:transparent)
-
-;; Reactive state cell: name and initial value
-(struct uir-state (name init) #:transparent)
-
-;; JSX embedded expression {expression-content} — raw text passthrough
-;; Used when the lowering pass captures opaque expression text from JSX
-(struct uir-jsx-expr (content) #:transparent)
 
 ;; ── Predicate ──────────────────────────────────────────────────────
 
@@ -290,6 +49,8 @@
       (uir-module? v)
       (uir-import? v)
       (uir-export? v)
+      (uir-enum? v)
+      (uir-enum-variant? v)
       (uir-component? v)
       (uir-element? v)
       (uir-attribute? v)
@@ -298,22 +59,22 @@
       (uir-text-node? v)
       (uir-style? v)
       (uir-effect? v)
-       (uir-state? v)
-       (uir-jsx-expr? v)
-       (uir-match? v)
-       (uir-case? v)
-       (uir-pat-literal? v)
-       (uir-pat-capture? v)
-       (uir-pat-wildcard? v)
-       (uir-pat-value? v)
-       (uir-pat-or? v)
-       (uir-pat-as? v)
-       (uir-pat-sequence? v)
-       (uir-pat-star? v)
-       (uir-pat-mapping? v)
-       (uir-pat-double-star? v)
-       (uir-pat-class? v)
-       (uir-pat-group? v)))
+      (uir-state? v)
+      (uir-jsx-expr? v)
+      (uir-match? v)
+      (uir-case? v)
+      (uir-pat-literal? v)
+      (uir-pat-capture? v)
+      (uir-pat-wildcard? v)
+      (uir-pat-value? v)
+      (uir-pat-or? v)
+      (uir-pat-as? v)
+      (uir-pat-sequence? v)
+      (uir-pat-star? v)
+      (uir-pat-mapping? v)
+      (uir-pat-double-star? v)
+      (uir-pat-class? v)
+      (uir-pat-group? v)))
 
 (define (uir-tag v)
   (cond [(uir-null? v)   'null]
@@ -351,6 +112,8 @@
         [(uir-module? v)    'module]
         [(uir-import? v)    'import]
         [(uir-export? v)    'export]
+        [(uir-enum? v)         'enum]
+        [(uir-enum-variant? v) 'enum-variant]
         [(uir-component? v)  'component]
         [(uir-element? v)    'element]
         [(uir-attribute? v)  'attribute]
@@ -469,6 +232,12 @@
         [(uir-import? v) `(import ,(uir->sexp (uir-import-source v))
                                   ,(map uir->sexp (uir-import-names v)))]
         [(uir-export? v) `(export ,(map uir->sexp (uir-export-names v)))]
+        [(uir-enum? v) `(enum ,(uir->sexp (uir-enum-name v))
+                              ,(map uir->sexp (uir-enum-variants v)))]
+        [(uir-enum-variant? v) `(enum-variant ,(uir->sexp (uir-enum-variant-name v))
+                                              ,(map uir->sexp (uir-enum-variant-fields v))
+                                              ,(let ([d (uir-enum-variant-discriminant v)])
+                                                 (if d (uir->sexp d) #f)))]
         [(uir-component? v) `(component ,(uir->sexp (uir-component-name v))
                                         ,(map uir->sexp (uir-component-props v))
                                         ,(map uir->sexp (uir-component-states v))
@@ -563,6 +332,11 @@
      (uir-import (sexp->uir source) (map sexp->uir names))]
     [`(export ,names)
      (uir-export (map sexp->uir names))]
+    [`(enum ,name ,variants)
+     (uir-enum (sexp->uir name) (map sexp->uir variants))]
+    [`(enum-variant ,name ,fields ,discriminant)
+     (uir-enum-variant (sexp->uir name) (map sexp->uir fields)
+                       (if discriminant (sexp->uir discriminant) #f))]
     [`(component ,name ,props ,states ,effects ,tmpl)
      (uir-component (sexp->uir name) (map sexp->uir props)
                     (map sexp->uir states) (map sexp->uir effects)
@@ -594,9 +368,11 @@
         [else s]))
 
 (define uir-tag-set (set 'null 'bool 'number 'string 'fstring 'list 'record 'symbol
-                          'fn 'call 'let 'var 'set! 'if 'block 'return 'for-each 'try 'with 'await 'yield 'decorated 'get
-                          'class 'method 'field 'new 'interface 'module 'import 'export
-                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr))
+                          'fn 'call 'let 'var 'set! 'if 'block 'return 'for-each 'try 'with 'await 'yield 'decorated 'get 'paren
+                          'class 'method 'field 'new 'interface 'module 'import 'export 'enum 'enum-variant
+                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr
+                          'match 'case 'pat-literal 'pat-capture 'pat-wildcard 'pat-value 'pat-or 'pat-as
+                          'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group))
 
 (define (uir-jsexpr->sexp j)
   (match j

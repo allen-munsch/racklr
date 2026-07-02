@@ -1,0 +1,91 @@
+# racklr issue tracker
+
+## Open
+
+### B17 — `getStaticProps` data inlining (STATIC PROPS)
+- **Status:** Not started.
+- **Goal:** Extract `return { props: { ... } }` from `getStaticProps`, pass the props object to the page component at call time, and embed the data in the HTML output so pages render with real data.
+- **Simplification:** Handle only the literal `return { props: { key: "value" } }` pattern (no async, no `getServerSideProps`, no database queries). The function body is regex-stripped, but we need to capture the return value first.
+- **Files:** `racklr/emit-router.rkt` (`page->js`), `racklr-test/tsx-integration-test.rkt`
+
+### B18 — Pages directory discovery
+- **Status:** Not started.
+- **Goal:** Given a `pages/` directory, discover all `.tsx` files, map filenames to routes (`index.tsx` → `/`, `about.tsx` → `/about`), and build the pages hash automatically.
+- **Simplification:** Flat files only. No dynamic routes (`[id].tsx`), no nested directories beyond one level, no `_app.tsx` or `_document.tsx`.
+- **Files:** New CLI entry point or helper in `racklr/`; tests in `racklr-test/`
+
+### B19 — Shared layout wrapper
+- **Status:** Not started.
+- **Goal:** Accept an optional `#:layout` source string whose default export wraps each page. The layout component receives page props including the page content.
+- **Simplification:** One global layout passed as option. The page component's rendered element is passed as a prop (`children` or similar) to the layout.
+- **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt`
+
+## Done
+
+### B16 — uir-test ordering bug
+- **Status:** Done. The failure was in `esbuild-integration-test.rkt`, not `uir-test.rkt`. The test tried to parse esbuild-bundled JSX+IIFE output through the TS parser, which crashed because IIFE-wrapped JSX isn't valid TS source. Removed the pipeline-from-bundled-output tests; multi-file resolution is covered by `tsx-integration-test.rkt` (B6).
+- **Files:** `racklr-test/esbuild-integration-test.rkt`
+
+### B15 — SSR / data fetching
+- **Status:** Done. `getStaticProps` and `getServerSideProps` (including `async` variants) are stripped from page output via regex in `emit-router.rkt`.
+- **Files:** `racklr/emit-router.rkt` (`page->js`), `racklr-test/tsx-integration-test.rkt` (B15 tests)
+- **Details:** Regex `(?m:^(export )?(async )?function (getStaticProps|getServerSideProps)\([^)]*\) \{.*\};?\n?)` strips entire function definition after emit.
+
+### B14 — Routing (pages/ convention)
+
+### B13 — Style objects
+- **Status:** Done. `style={{color: "red"}}` lowered to `Object.assign(_el.style, {color: "red"})`.
+- **File:** `racklr/emit-dom-javascript.rkt`
+
+### B12 — Conditional rendering
+- **Status:** Done. `{cond && <div/>}` and `{cond ? <A/> : <B/>}` lowered via post-lowering pass in `tsx-preprocess.rkt`, emitted as bare ternary in `.appendChild()`.
+- **Files:** `racklr/tsx-preprocess.rkt` (`process-jsx-expr-conditionals`), `racklr/emit-javascript.rkt` (uir-if exemption in JSX child path)
+- **Tests:** `racklr-test/tsx-integration-test.rkt` (B12a, B12b)
+
+### B7 — Component calls vs HTML elements
+- **Status:** Done. Lowercase tag names → `uir-element` + DOM emission. Uppercase → `uir-call` invoking the function.
+- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
+
+### B8 — Props as function arguments
+- **Status:** Done. Component calls collect attributes into object literal argument. HTML elements keep `setAttribute`.
+- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
+
+### B9 — Expression children in JSX
+- **Status:** Done. Non-string expression children wrapped in `document.createTextNode(...)`.
+- **File:** `racklr/emit-dom-javascript.rkt`
+
+### B10 — Hooks (useState, useEffect)
+- **Status:** Done. `useState` → closure-based state, `useEffect` → DOM mount callback.
+- **File:** `racklr/lower-hooks.rkt`
+
+### B11 — Event handlers
+- **Status:** Done. `onClick`/`onChange` lowered to `_el.addEventListener("...", handler)`.
+- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
+
+### B6 — Multi-file/module support
+- **Status:** Done. Uses esbuild for import resolution + type-stripping (JSX preserved), racklr handles parse→lower→emit.
+- **File:** `racklr/esbuild-resolve.rkt` (new)
+- **Tests:** `racklr-test/tsx-integration-test.rkt` (+3 multi-file tests, 11 total)
+- **Interface:** `(resolve-imports files #:entry "app.tsx")` → bundled source string
+- **Details:** Shells out to `npx esbuild --bundle --jsx=preserve --format=esm`, strips comments (ANTLR4's `channel(HIDDEN)` not implemented in racklr), returns merged source with JSX intact. Wired into pipeline via `tsx-app->js`.
+
+### B1 — `let`/`const` lowered to `var` in TypeScript
+- **File:** `racklr/lower-typescript.rkt:105`
+- **Fix:** Changed `(define vm (find-kid vdl 'varModifier))` to `(define vm (find-kid node 'varModifier))`
+
+### B2 — Member expression (6+ kids) lowered to null
+- **File:** `racklr/lower-typescript.rkt:494`
+- **Fix:** Changed `(= (length kids) 5)` to `(>= (length kids) 5)`, added infix detection for 2-kid case with proper discriminator, added TS call path for singleExpression-wrapped calls
+
+### B3 — Arrow functions lowered as regular `function() {}`
+- **File:** `racklr/lower-typescript.rkt:783-788`
+- **Fix:** `lower-arrow-fn` now finds `arrowFunctionDeclaration` child, searches within that for `arrowFunctionParameters`. Fixed param list handling for TS grouped parameters.
+
+### B4 — Test expects `void` for void return type
+- **File:** `racklr-test/lower-typescript-test.rkt:67`
+- **Fix:** Changed check from `"void"` to `"log"` (function name preserved, return type correctly stripped)
+
+### B5 — HTML emitter
+- **File:** `racklr/emit-html.rkt` (new)
+- **Tests:** `racklr-test/emit-html-test.rkt` (new, 12 tests)
+- **Interface:** `(emit-html uir #:title "App")` → HTML5 document with embedded JS

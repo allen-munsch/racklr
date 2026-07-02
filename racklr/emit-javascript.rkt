@@ -4,6 +4,19 @@
 
 (provide emit-javascript)
 
+;; ── React event name helpers ─────────────────────────────────────────
+
+;; e.g. "onClick" → #t, "className" → #f
+(define (react-event-prop? name)
+  (and (string? name)
+       (>= (string-length name) 3)
+       (string-prefix? name "on")
+       (char-upper-case? (string-ref name 2))))
+
+;; e.g. "onClick" → "click", "onChange" → "change"
+(define (react-event->dom name)
+  (string-downcase (substring name 2)))
+
 ;; ── UIR → JavaScript text emitter ────────────────────────────────────
 
 (define infix-ops
@@ -22,6 +35,75 @@
     [(uir-number v) v]
     [(uir-string v) (format "~s" v)]
     [(uir-symbol v) v]
+    
+    ;; JSX element → DOM API calls (HTML) or component call
+    [(uir-element tag-uir attrs children _events)
+     (cond
+       ;; Component call: tag is a uir-symbol (uppercase)
+       [(uir-symbol? tag-uir)
+        (define tag-name (uir-symbol-name tag-uir))
+        (define props-str
+          (if (null? attrs) ""
+              (string-join
+               (for/list ([attr attrs])
+                 (match-define (uir-attribute name-uir value-uir) attr)
+                 (format "~a: ~a" (uir-symbol-name name-uir) (emit-javascript value-uir)))
+               ", ")))
+        (format "~a({~a})" tag-name props-str)]
+       
+       ;; HTML element: tag is a uir-string (lowercase)
+        [(uir-string? tag-uir)
+         (define tag-str (format "~s" (uir-string-value tag-uir)))
+          (define attr-code
+           (string-join
+            (for/list ([attr (in-list attrs)])
+              (match-define (uir-attribute name-uir value-uir) attr)
+              (define name-str (symbol->string (uir-symbol-name name-uir)))
+              (define val-str (emit-javascript value-uir))
+              (cond
+                [(string=? name-str "style")
+                 (format "Object.assign(_el.style,~a);" val-str)]
+                [(react-event-prop? name-str)
+                 (format "_el.addEventListener(\"~a\",~a);"
+                         (react-event->dom name-str)
+                         val-str)]
+                [else
+                 (format "_el.setAttribute(\"~a\",~a);" name-str val-str)]))
+            ""))
+        (define child-code
+          (string-join
+           (for/list ([child (in-list children)])
+             (define emitted (emit-javascript child))
+              (define wrapped
+                 (cond [(uir-text-node? child) emitted]
+                       [(uir-element? child) emitted]
+                       [(uir-if? child) emitted]
+                       [else (format "document.createTextNode(~a)" emitted)]))
+             (format "_el.appendChild(~a);" wrapped))
+           ""))
+        (string-append
+         "(function(){"
+         "var _el=document.createElement(" tag-str ");"
+         attr-code
+         child-code
+         "return _el;"
+         "})()")]
+       
+       [else
+        (error "uir-element tag must be uir-symbol or uir-string")])]
+    
+    [(uir-text-node text-uir)
+     (format "document.createTextNode(~a)" (emit-javascript text-uir))]
+    
+    [(uir-jsx-expr expr)
+     expr]
+    
+    [(uir-attribute name-uir value-uir)
+     (cons (format "~s" (uir-symbol-name name-uir))
+           (emit-javascript value-uir))]
+    
+    [(uir-style _styles)
+     ""]
     
     [(uir-list items)
      (format "[~a]" (string-join (map emit-javascript items) ", "))]
@@ -217,12 +299,15 @@
              (string-join (map emit-javascript args) ", "))]
     
     [(uir-class name super fields methods)
-     (format "class ~a~a { }"
+     (format "class ~a~a {~a}"
              (emit-javascript name)
-             (if (uir-null? super) "" (format " extends ~a" (emit-javascript super))))]
+             (if (uir-null? super) "" (format " extends ~a" (emit-javascript super)))
+             (if (null? methods)
+                 ""
+                 (string-append "" (string-join (map emit-statement methods) ""))))]
     
     [(uir-block stmts)
-     (string-join (map emit-statement stmts) " ")]
+     (string-join (map emit-statement stmts) "\n")]
     
     [(uir-return val)
      (format "return ~a" (emit-javascript val))]
@@ -270,7 +355,12 @@
               (string=? (uir-symbol-name (uir-call-callee node)) "dowhile"))
          (format "~a;" (emit-javascript node))]
         [(declaration? node)
-         (format "~a;" (emit-javascript node))]
+          (format "~a;" (emit-javascript node))]
+        [(uir-method? node)
+         (format "~a(~a) {~a}"
+                 (emit-javascript (uir-method-name node))
+                 (string-join (map emit-javascript (uir-method-params node)) ", ")
+                 (emit-javascript (uir-method-body node)))]
         [(uir-var? node)
          (format "~a;" (emit-javascript node))]
         [else (format "~a;" (emit-javascript node))]))
