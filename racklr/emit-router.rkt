@@ -9,7 +9,8 @@
          (prefix-in ts-lower: racklr/lower-typescript))
 
 (provide emit-pages-html
-         make-emit-pages-html)
+         make-emit-pages-html
+         discover-pages)
 
 ;; ── Factory: create emit-pages-html with pre-loaded parsers ───────────
 ;; Callers load parsers once and pass them in, avoiding gen-and-load
@@ -18,6 +19,24 @@
 (define (make-emit-pages-html ts-parse ts-tokenize ts-tok-type ts-tok-value
                               jsx-parse jsx-tokenize jsx-tok-type jsx-tok-value)
   ;; Returns emit-pages-html function with baked-in parsers.
+
+  (define (extract-static-props full-js)
+    (define rx-return #rx"return \\{ *props: *")
+    (define m (regexp-match-positions rx-return full-js))
+    (and m
+         (let* ([start (cdar m)]
+                [props-start start])
+           (and (< props-start (string-length full-js))
+                (let loop ([pos props-start] [depth 1])
+                  (cond [(= depth 0) (substring full-js props-start (- pos 1))]
+                        [(>= pos (string-length full-js)) #f]
+                        [(char=? (string-ref full-js pos) #\{) (loop (+ pos 1) (+ depth 1))]
+                        [(char=? (string-ref full-js pos) #\}) (loop (+ pos 1) (- depth 1))]
+                        [(or (char=? (string-ref full-js pos) #\")
+                             (char=? (string-ref full-js pos) #\'))
+                         (define end (advance-past-string full-js pos (string-ref full-js pos)))
+                         (loop end depth)]
+                        [else (loop (+ pos 1) depth)]))))))
 
   (define (page->js source)
     (define hookless (preprocess-hooks source))
@@ -30,6 +49,8 @@
     (define ts-uir (ts-lower:lower-program ts-cst ts-tok-type ts-tok-value))
     (define uir (restore-jsx ts-uir jsx-uir))
     (define full-js (emit-javascript uir))
+    ;; Extract getStaticProps data before stripping (B17)
+    (define static-props (extract-static-props full-js))
     ;; Strip data-fetching functions (getStaticProps, getServerSideProps)
     (define no-data-fetching
       (regexp-replace* #rx"(?m:^(export )?(async )?function (getStaticProps|getServerSideProps)\\([^)]*\\) \\{.*\\};?\n?)" full-js ""))
@@ -41,37 +62,72 @@
     ;; Strip trailing junk (esbuild sometimes emits "null;" after exports)
     (define no-null (regexp-replace #rx"\\s*null;\\s*$" no-export-decl ""))
     ;; Strip trailing semicolons — values used inline in object literal
-    (string-trim (regexp-replace #rx";\\s*$" no-null "")))
+    (values (string-trim (regexp-replace #rx";\\s*$" no-null ""))
+            static-props))
 
   (lambda (pages
            #:title [title "App"]
            #:all-files [all-files #f]
-           #:path-to-entry [path-to-entry (lambda (p) p)])
+           #:path-to-entry [path-to-entry (lambda (p) p)]
+           #:layout [layout #f])
     ;; pages: hash of URL-path (string) → source (string)
     ;;   Each source is a page component.
     ;;   If #:all-files is provided: hash of filename → source for the full project.
     ;;     #:path-to-entry maps URL path → filename in all-files (default: identity).
     ;;     Uses esbuild to resolve imports per-page.
+    ;;   #:layout (optional) TSX source for a shared layout component.
+    ;;     Receives page props + { children: page-element }.
 
     (define (resolve-page page-src url-path)
       (if all-files
           (resolve-imports all-files #:entry (path-to-entry url-path))
           page-src))
 
+    ;; Compile optional layout through the pipeline (B19)
+    (define layout-fn
+      (and layout
+           (let* ([hookless (preprocess-hooks layout)]
+                  [values (preprocess-tsx hookless
+                                         #:jsx-parse jsx-parse
+                                         #:jsx-lower-tk-type jsx-tok-type
+                                         #:jsx-lower-tk-value jsx-tok-value)])
+             (define-values (processed _layout-jsx-map layout-jsx-uir) values)
+             (define layout-cst (ts-parse processed))
+             (define layout-uir (ts-lower:lower-program layout-cst ts-tok-type ts-tok-value))
+             (define layout-uir-jsx (restore-jsx layout-uir layout-jsx-uir))
+             (define layout-js (emit-javascript layout-uir-jsx))
+             ;; Strip export default and trailing semicolons
+             (define no-export (regexp-replace* #rx"(?m:^export default )" layout-js ""))
+             (define no-null (regexp-replace #rx"\\s*null;\\s*$" no-export ""))
+             (string-trim (regexp-replace #rx";\\s*$" no-null "")))))
+
     (define page-entries
       (for/list ([(path src) (in-hash pages)])
         (define resolved (resolve-page src path))
-        (define page-js (page->js resolved))
-        (cons path page-js)))
+        (define-values (page-js static-props) (page->js resolved))
+        (list path page-js static-props)))
 
     ;; Assemble router JS
     (define router-lines
       (list
+       (if layout-fn
+           (format "var _layout = ~a;" layout-fn)
+           "var _layout = null;")
+       ""
+       "var _pageData = {"
+       (string-join
+        (for/list ([entry (in-list page-entries)])
+          (define path (first entry))
+          (define props (third entry))
+          (format "  \"~a\": ~a" path (or props "null")))
+        ",\n")
+       "};"
+       ""
        "var _pages = {"
        (string-join
         (for/list ([entry (in-list page-entries)])
-          (define path (car entry))
-          (define js (cdr entry))
+          (define path (first entry))
+          (define js (second entry))
           (format "  \"~a\": ~a" path js))
         ",\n")
        "};"
@@ -81,7 +137,12 @@
        "  app.innerHTML = \"\";"
        "  var pageFn = _pages[path];"
        "  if (pageFn) {"
-       "    var el = pageFn();"
+       "    var pageData = _pageData[path];"
+       "    var el = pageFn(pageData);"
+       "    if (_layout) {"
+       "      var merged = Object.assign({}, pageData || {}, { children: el });"
+       "      el = _layout(merged);"
+       "    }"
        "    if (el) app.appendChild(el);"
        "  }"
        "}"
@@ -100,7 +161,7 @@
     (define nav-links
       (string-join
        (for/list ([entry (in-list page-entries)])
-         (define path (car entry))
+          (define path (first entry))
         (format "      <a href=\"#~a\">~a</a>"
                 path
                 (if (equal? path "/") "Home"
@@ -125,6 +186,23 @@
      "  </script>\n"
      "</body>\n"
      "</html>\n")))
+
+;; ── B18: Pages directory discovery ───────────────────────────────────
+
+(define (discover-pages dir)
+  ;; Scan a directory for *.tsx files. Map filenames to URL paths:
+  ;;   index.tsx → "/"
+  ;;   about.tsx → "/about"
+  ;; Flat files only — no dynamic routes, no nested dirs.
+  ;; Returns a hash: URL-path → source-string.
+  (for/hash ([p (in-list (directory-list dir #:build? #f))]
+             #:when (and (regexp-match #rx"\\.tsx$" (path->string p))
+                         (not (string-prefix? (path->string p) "."))))
+    (define name (path->string p))
+    (define url-path
+      (cond [(equal? name "index.tsx") "/"]
+            [else (string-append "/" (regexp-replace #rx"\\.tsx$" name ""))]))
+    (values url-path (file->string (build-path dir p)))))
 
 ;; ── Convenience: same API for callers that want auto-loading ──────────
 

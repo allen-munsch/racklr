@@ -1,26 +1,18 @@
 # racklr issue tracker
 
-## Open
-
-### B17 — `getStaticProps` data inlining (STATIC PROPS)
-- **Status:** Not started.
-- **Goal:** Extract `return { props: { ... } }` from `getStaticProps`, pass the props object to the page component at call time, and embed the data in the HTML output so pages render with real data.
-- **Simplification:** Handle only the literal `return { props: { key: "value" } }` pattern (no async, no `getServerSideProps`, no database queries). The function body is regex-stripped, but we need to capture the return value first.
-- **Files:** `racklr/emit-router.rkt` (`page->js`), `racklr-test/tsx-integration-test.rkt`
-
-### B18 — Pages directory discovery
-- **Status:** Not started.
-- **Goal:** Given a `pages/` directory, discover all `.tsx` files, map filenames to routes (`index.tsx` → `/`, `about.tsx` → `/about`), and build the pages hash automatically.
-- **Simplification:** Flat files only. No dynamic routes (`[id].tsx`), no nested directories beyond one level, no `_app.tsx` or `_document.tsx`.
-- **Files:** New CLI entry point or helper in `racklr/`; tests in `racklr-test/`
+## Done
 
 ### B19 — Shared layout wrapper
-- **Status:** Not started.
-- **Goal:** Accept an optional `#:layout` source string whose default export wraps each page. The layout component receives page props including the page content.
-- **Simplification:** One global layout passed as option. The page component's rendered element is passed as a prop (`children` or similar) to the layout.
+- **Status:** Done. `#:layout` option accepts TSX source for a shared layout component. Layout receives page props merged with `{ children: pageElement }`. `_mount` wraps each page through the layout via `Object.assign`.
 - **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt`
 
-## Done
+### B18 — Pages directory discovery
+- **Status:** Done. `discover-pages` function scans a directory for `*.tsx` files, maps `index.tsx` to `/` and `name.tsx` to `/name`. Ignores dotfiles and non-.tsx files. Returns a hash suitable for `emit-pages-html`.
+- **Files:** `racklr/emit-router.rkt` (`discover-pages`), `racklr-test/tsx-integration-test.rkt`
+
+### B17 — `getStaticProps` data inlining (STATIC PROPS)
+- **Status:** Done. `extract-static-props` uses brace-counting to pull the props object literal from `return { props: { ... } }` in emitted JS before the function is stripped. Props are injected as `_pageData` in the router, passed to `pageFn(pageData)`, and merged with layout children via `Object.assign`.
+- **Files:** `racklr/emit-router.rkt` (`extract-static-props`, updated `page->js` and router template), `racklr-test/tsx-integration-test.rkt`
 
 ### B16 — uir-test ordering bug
 - **Status:** Done. The failure was in `esbuild-integration-test.rkt`, not `uir-test.rkt`. The test tried to parse esbuild-bundled JSX+IIFE output through the TS parser, which crashed because IIFE-wrapped JSX isn't valid TS source. Removed the pipeline-from-bundled-output tests; multi-file resolution is covered by `tsx-integration-test.rkt` (B6).
