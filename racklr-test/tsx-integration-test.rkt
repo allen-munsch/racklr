@@ -246,3 +246,90 @@ export default () => <p>About page</p>;"))
 (check-true (string-contains? pages-b15-html "createElement(\"p\")"))
 (check-true (string-contains? pages-b15-html "createTextNode(\"Home Page\")"))
 (check-true (string-contains? pages-b15-html "createTextNode(\"About page\")"))
+
+;; ── B17: getStaticProps data inlining ───────────────────────────
+
+(define pages-b17
+  (hash "/" "export async function getStaticProps() { return { props: { title: \"Home\" } }; }
+export default (props) => <h1>{props.title}</h1>;"
+        "/about" "export function getStaticProps() { return { props: { heading: \"About Us\" } }; }
+export default (props) => <p>{props.heading}</p>;"))
+
+(define pages-b17-html (emit-pages pages-b17 #:title "B17 Test"))
+(printf "B17 HTML (~a chars)\n" (string-length pages-b17-html))
+;; getStaticProps must be stripped from output
+(check-false (string-contains? pages-b17-html "getStaticProps"))
+;; _pageData must be present with the extracted props
+(check-true (string-contains? pages-b17-html "var _pageData"))
+(check-true (string-contains? pages-b17-html "title: \"Home\""))
+(check-true (string-contains? pages-b17-html "heading: \"About Us\""))
+;; pageFn must be called with pageData
+(check-true (string-contains? pages-b17-html "pageFn(pageData)"))
+;; The page component references props.title as a variable
+(check-true (string-contains? pages-b17-html "createTextNode(props.title)"))
+(check-true (string-contains? pages-b17-html "createTextNode(props.heading)"))
+;; Page components still render DOM elements
+(check-true (string-contains? pages-b17-html "createElement(\"h1\")"))
+(check-true (string-contains? pages-b17-html "createElement(\"p\")"))
+
+;; B18 helper alias
+(define check-string-contains? (lambda (s sub) (check-true (string-contains? s sub))))
+
+;; ── B18: Pages directory discovery ─────────────────────────────────
+
+;; Test discover-pages with a temp directory
+(define b18-tmp-dir (make-temporary-file "racklr-b18-~a" 'directory))
+(display-to-file "export default () => <h1>Index Page</h1>;" (build-path b18-tmp-dir "index.tsx"))
+(display-to-file "export default () => <p>About</p>;" (build-path b18-tmp-dir "about.tsx"))
+;; Non-.tsx files should be ignored
+(display-to-file "ignored" (build-path b18-tmp-dir "readme.md"))
+(display-to-file "ignored" (build-path b18-tmp-dir ".hidden.tsx"))
+
+(define b18-discovered (discover-pages b18-tmp-dir))
+(check-equal? (hash-count b18-discovered) 2 "should discover exactly 2 pages")
+(check-true (hash-has-key? b18-discovered "/") "should map index.tsx to /")
+(check-true (hash-has-key? b18-discovered "/about") "should map about.tsx to /about")
+(check-false (hash-has-key? b18-discovered "/readme") "should ignore .md files")
+(check-false (hash-has-key? b18-discovered "/.hidden") "should ignore dotfiles")
+(check-string-contains? (hash-ref b18-discovered "/") "<h1>Index Page</h1>")
+(check-string-contains? (hash-ref b18-discovered "/about") "<p>About</p>")
+
+;; End-to-end: discover + emit
+(define b18-html (emit-pages b18-discovered #:title "B18 Test"))
+(check-true (string-contains? b18-html "var _pages = {"))
+(check-true (string-contains? b18-html "\"/\":"))
+(check-true (string-contains? b18-html "\"/about\":"))
+
+;; Cleanup
+(delete-file (build-path b18-tmp-dir "index.tsx"))
+(delete-file (build-path b18-tmp-dir "about.tsx"))
+(delete-file (build-path b18-tmp-dir "readme.md"))
+(delete-file (build-path b18-tmp-dir ".hidden.tsx"))
+(delete-directory b18-tmp-dir)
+
+;; ── B19: Shared layout wrapper ─────────────────────────────────────
+
+(define b19-pages
+  (hash "/" "export default () => <h1>Home Page</h1>;"
+        "/about" "export default () => <p>About page content</p>;"))
+
+(define b19-layout
+  "export default ({ children, title }) => <div class=\"layout\"><header>Site</header><main>{children}</main><footer>Foot</footer></div>;")
+
+(define b19-html-no-layout (emit-pages b19-pages #:title "No Layout"))
+(check-true (string-contains? b19-html-no-layout "createElement(\"h1\")"))
+(check-false (string-contains? b19-html-no-layout "Site"))
+
+(define b19-html (emit-pages b19-pages #:title "With Layout" #:layout b19-layout))
+;; Layout wrapper creates a div.layout, header, main, footer
+(check-true (string-contains? b19-html "createElement(\"div\")"))
+(check-true (string-contains? b19-html "createTextNode(\"Site\")"))
+(check-true (string-contains? b19-html "createTextNode(\"Foot\")"))
+;; _layout function must be present
+(check-true (string-contains? b19-html "var _layout = "))
+(check-false (string-contains? b19-html "var _layout = null"))
+;; Page content still rendered
+(check-true (string-contains? b19-html "createTextNode(\"Home Page\")"))
+(check-true (string-contains? b19-html "createTextNode(\"About page content\")"))
+;; _mount uses layout wrapping
+(check-true (string-contains? b19-html "Object.assign({}, pageData || {}, { children: el })"))
