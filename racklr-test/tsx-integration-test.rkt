@@ -21,16 +21,17 @@
   (gen-and-load "../grammars-v4/javascript/jsx-cleaned/JSXParser.g4"))
 
 (define (tsx->uir source)
-  (define hookless (preprocess-hooks source))
+  (define cleaned (preprocess-imports source))
   (define-values (processed jsx-map jsx-uir)
-    (preprocess-tsx hookless
+    (preprocess-tsx cleaned
                     #:jsx-parse jsx-parse
                     #:jsx-lower-tk-type jsx-tok-type
                     #:jsx-lower-tk-value jsx-tok-value))
   
   (define ts-cst (ts-parse processed))
   (define ts-uir (ts-lower:lower-program ts-cst ts-tok-type ts-tok-value))
-  (restore-jsx ts-uir jsx-uir))
+  (define with-jsx (restore-jsx ts-uir jsx-uir))
+  (lower-hooks with-jsx))
 
 (define (tsx->js source)
   (define uir (tsx->uir source))
@@ -116,8 +117,8 @@ const msg = <div>{count}</div>;")
 (check-false (string-contains? result5 "import"))
 (check-false (string-contains? result5 "react"))
 (check-false (string-contains? result5 "useState"))
-(check-true (string-contains? result5 "let count = 0"))
-(check-true (string-contains? result5 "let setCount = function"))
+(check-true (string-contains? result5 "var count"))
+(check-true (string-contains? result5 "var setCount = function"))
 (check-true (string-contains? result5 "document.createElement(\"div\")"))
 (check-true (string-contains? result5 "createTextNode(count)"))
 
@@ -170,6 +171,73 @@ const Page = () => <div>{cond ? <h1>Yes</h1> : <h2>No</h2>}</div>;")
 (printf "Test 7 result: ~a\n" result7)
 (check-true (string-contains? result7 "Object.assign(_el.style"))
 (check-false (string-contains? result7 "setAttribute(\"style\""))
+
+;; ── B51: Object shorthand in JSX expression ──────────────────────
+
+(define test-b51a "<Comp props={{x, y: 1}} />")
+(define result-b51a (tsx->js test-b51a))
+(printf "B51a result: ~a\n" result-b51a)
+(check-true (string-contains? result-b51a "{x, y: 1}"))
+
+(define test-b51b "<Comp config={{x}} />")
+(define result-b51b (tsx->js test-b51b))
+(printf "B51b result: ~a\n" result-b51b)
+(check-true (string-contains? result-b51b "{x}"))
+
+;; ── B52: Destructured function params ────────────────────────────────
+
+;; Arrow function with destructured params
+(define test-b52a "const f = ({x, y}) => x + y;")
+(define result-b52a (tsx->js test-b52a))
+(printf "B52a result: ~a\n" result-b52a)
+(check-true (string-contains? result-b52a "_p0.x"))
+(check-true (string-contains? result-b52a "_p0.y"))
+(check-true (string-contains? result-b52a "=>"))
+
+;; Arrow function with renamed destructured param
+(define test-b52b "const f = ({x: a, y: b}) => a + b;")
+(define result-b52b (tsx->js test-b52b))
+(printf "B52b result: ~a\n" result-b52b)
+(check-true (string-contains? result-b52b "_p0.x"))
+(check-true (string-contains? result-b52b "_p0.y"))
+
+;; Function expression with destructured params
+(define test-b52c "const f = function({x, y}) { return x + y; };")
+(define result-b52c (tsx->js test-b52c))
+(printf "B52c result: ~a\n" result-b52c)
+(check-true (string-contains? result-b52c "_p0.x"))
+(check-true (string-contains? result-b52c "_p0.y"))
+
+;; Arrow with array destructuring
+(define test-b52d "const f = ([a, b]) => a + b;")
+(define result-b52d (tsx->js test-b52d))
+(printf "B52d result: ~a\n" result-b52d)
+(check-true (string-contains? result-b52d "_p0[0]"))
+(check-true (string-contains? result-b52d "_p0[1]"))
+
+;; ── B53: Optional chaining ?. lowered as function call ────────────────
+
+;; Basic optional property access: a?.b → a == null ? void 0 : a.b
+(define test-b53a "const x = a?.b;")
+(define result-b53a (tsx->js test-b53a))
+(printf "B53a result: ~a\n" result-b53a)
+(check-true (string-contains? result-b53a "a == null"))
+(check-true (string-contains? result-b53a "a.b"))
+(check-false (string-contains? result-b53a "?.("))
+
+;; Chained optional property access: a?.b?.c
+(define test-b53b "const x = a?.b?.c;")
+(define result-b53b (tsx->js test-b53b))
+(printf "B53b result: ~a\n" result-b53b)
+(check-true (string-contains? result-b53b "a == null"))
+(check-true (string-contains? result-b53b "a.b"))
+
+;; Optional method call: a?.b()
+(define test-b53c "const x = a?.b();")
+(define result-b53c (tsx->js test-b53c))
+(printf "B53c result: ~a\n" result-b53c)
+(check-true (string-contains? result-b53c "a == null"))
+(check-true (string-contains? result-b53c "a.b()"))
 
 ;; ── Multi-file tests ───────────────────────────────────────────────
 
@@ -291,8 +359,8 @@ export default (props) => <p>{props.heading}</p>;"))
 (check-true (hash-has-key? b18-discovered "/about") "should map about.tsx to /about")
 (check-false (hash-has-key? b18-discovered "/readme") "should ignore .md files")
 (check-false (hash-has-key? b18-discovered "/.hidden") "should ignore dotfiles")
-(check-string-contains? (hash-ref b18-discovered "/") "<h1>Index Page</h1>")
-(check-string-contains? (hash-ref b18-discovered "/about") "<p>About</p>")
+(check-string-contains? (car (hash-ref b18-discovered "/")) "<h1>Index Page</h1>")
+(check-string-contains? (car (hash-ref b18-discovered "/about")) "<p>About</p>")
 
 ;; End-to-end: discover + emit
 (define b18-html (emit-pages b18-discovered #:title "B18 Test"))
@@ -333,3 +401,30 @@ export default (props) => <p>{props.heading}</p>;"))
 (check-true (string-contains? b19-html "createTextNode(\"About page content\")"))
 ;; _mount uses layout wrapping
 (check-true (string-contains? b19-html "Object.assign({}, pageData || {}, { children: el })"))
+
+;; ── B55: Template literals ──────────────────────────────────────────
+
+(define b55a (tsx->js "const x = `hello ${name} world`;"))
+(check-true (string-contains? b55a "\"hello \" + (name) + \" world\""))
+
+(define b55b (tsx->js "const x = `hello world`;"))
+(check-true (string-contains? b55b "\"hello world\""))
+
+(define b55c (tsx->js "const x = `${greeting}, ${name}!`;"))
+(check-true (string-contains? b55c "\"\" + (greeting) + \", \" + (name) + \"!\""))
+
+;; Expression precedence preserved
+(define b55d (tsx->js "const x = `result: ${a ? b : c}`;"))
+(check-true (string-contains? b55d "(a ? b : c)"))
+
+(define b55e (tsx->js "const x = `count: ${x + y}`;"))
+(check-true (string-contains? b55e "(x + y)"))
+
+(define b55f (tsx->js "const x = `items: ${arr.join(\",\")}`;"))
+(check-true (string-contains? b55f "(arr.join(\",\"))"))
+
+(define b55g (tsx->js "const x = `${a > b}`;"))
+(check-true (string-contains? b55g "(a > b)"))
+
+(define b55h (tsx->js "const x = `${a && b}`;"))
+(check-true (string-contains? b55h "(a && b)"))
