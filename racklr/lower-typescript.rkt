@@ -1,33 +1,18 @@
 #lang racket
 
 (require racklr/tree
-         racklr/uir)
+         racklr/uir
+         "lower-typescript/helpers.rkt"
+         "lower-typescript/expr.rkt")
 
 (provide lower-program)
 
 ;; ── JavaScript CST → UIR lowering pass ───────────────────────────────
+;;
 ;; lower-program takes: cst, tk-type, tk-value
-;; tk-type and tk-value are the token accessors from the generated parser
-
-;; Helpers
-(define (tok? x tk-type)
-  (and (not (cst-node? x)) (not (null? x)) (not (eq? x 'none))
-       (not (pair? x))
-       (with-handlers ([exn:fail? (λ (_) #f)])
-         (tk-type x) #t)))
-
-(define (cst-kids n) (filter cst-node? (cst-node-children n)))
-(define (tag-of n) (cst-node-tag n))
-(define (kids-of n) (cst-node-children n))
-
-(define (find-kid n tag)
-  (for/or ([k (kids-of n)] #:when (and (cst-node? k) (eq? (tag-of k) tag))) k))
-
-(define (find-list n)
-  (for/or ([k (kids-of n)] #:when (pair? k)) k))
-
-(define (find-node-or-list n)
-  (for/or ([k (kids-of n)] #:when (or (cst-node? k) (pair? k))) k))
+;;   cst      — CST node for the top-level program rule (sourceElements)
+;;   tk-type  — token type-accessor from the parser
+;;   tk-value — token value-accessor from the parser
 
 ;; ── Entry ────────────────────────────────────────────────────────────
 
@@ -152,14 +137,7 @@
 
 ;; Helpers for export lowering
 
-(define (extract-identifier-name node tk-type tk-value)
-  (define in (find-kid node 'identifierName))
-  (and in
-       (let ([ident (find-kid in 'identifier)])
-         (and ident
-              (let ([tok (first (kids-of ident))])
-                (and (tok? tok tk-type) (eq? (tk-type tok) 'Identifier)
-                     (tk-value tok)))))))
+
 
 ;; ── Statements ───────────────────────────────────────────────────────
 
@@ -225,31 +203,20 @@
       (car uir-decls)
       (uir-block uir-decls)))
 
-(define (extract-var-kind vm tk-type)
-  (define kid (first (kids-of vm)))
-  (cond [(and (tok? kid tk-type) (eq? (tk-type kid) 'Var)) "var"]
-        [(and (tok? kid tk-type) (eq? (tk-type kid) 'Const)) "const"]
-        [(and (tok? kid tk-type) (eq? (tk-type kid) 'Let)) "let"]
-        [(and (cst-node? kid) (eq? (tag-of kid) 'let_)) "let"]
-        [else "var"]))
 
 (define (lower-var-decl node tk-type tk-value)
   ;; TypeScript variableDeclaration:
   ;;   (identifierOrKeyWord | arrayLiteral | objectLiteral) typeAnnotation? singleExpression? ('=' typeParameters? singleExpression)?
-  ;; CST: group(identifierOrKeyWord->identifier), typeAnnotation?, none?, group(= rhs)?
+  ;; CST: group(identifierOrKeyWord->identifier OR arrayLiteral OR objectLiteral), typeAnnotation?, none?, group(= rhs)?
   (define kids (kids-of node))
   ;; Find identifier group (first group child)
   (define id-group
     (for/or ([k kids] #:when (and (cst-node? k) (eq? (tag-of k) 'group))) k))
-  (define var-name
-    (if id-group
-        (let* ([iok (find-kid id-group 'identifierOrKeyWord)]
-               [ident (and iok (find-kid iok 'identifier))]
-               [tok (and ident (first (kids-of ident)))])
-          (if (and tok (tok? tok tk-type))
-              (uir-symbol (tk-value tok))
-              (uir-symbol "?")))
-        (uir-symbol "?")))
+  
+  ;; Check for array destructuring: const [a, b] = expr
+  (define arr-lit (and id-group (find-kid id-group 'arrayLiteral)))
+  (define obj-lit (and id-group (find-kid id-group 'objectLiteral)))
+  
   ;; Find initializer group (second group child)
   (define init-group
     (let loop ([ks kids] [found-first? #f])
@@ -264,9 +231,124 @@
               (lower-single-expression se tk-type tk-value)
               (uir-null)))
         (uir-null)))
-  (if (uir-null? rhs)
-      (uir-var var-name)
-      (uir-set! var-name rhs)))
+
+  (cond
+    ;; Array destructuring: const [a, b] = expr
+    [arr-lit
+     (define names (extract-array-binding-names arr-lit tk-type tk-value))
+     (if (uir-null? rhs)
+         (uir-call (uir-symbol "array-bind") (list (uir-list names) (uir-null)))
+         (uir-call (uir-symbol "array-bind") (list (uir-list names) rhs)))]
+
+    ;; Object destructuring: const { x, y } = expr
+    [obj-lit
+     (define names (extract-object-binding-names obj-lit tk-type tk-value))
+     (if (uir-null? rhs)
+         (uir-call (uir-symbol "object-bind") (list (uir-list names) (uir-null)))
+         (uir-call (uir-symbol "object-bind") (list (uir-list names) rhs)))]
+
+    ;; Simple identifier binding
+    [else
+     (define var-name
+       (if id-group
+           (let* ([iok (find-kid id-group 'identifierOrKeyWord)]
+                  [ident (and iok (find-kid iok 'identifier))]
+                  [tok (and ident (first (kids-of ident)))])
+             (if (and tok (tok? tok tk-type))
+                 (uir-symbol (tk-value tok))
+                 (uir-symbol "?")))
+           (uir-symbol "?")))
+     (if (uir-null? rhs)
+         (uir-var var-name)
+         (uir-set! var-name rhs))]))
+
+;; Extract identifier names from an arrayLiteral CST node.
+;; Returns list of uir-symbols.
+(define (extract-array-binding-names node tk-type tk-value)
+  ;; node is arrayLiteral; inside is group(OpenBracket, elementList, CloseBracket)
+  (define inner-group (find-kid node 'group))
+  (define el (and inner-group (find-kid inner-group 'elementList)))
+  (unless el '())
+  (define names '())
+  ;; elementList children: first arrayElement as direct node, rest in a list of (group Comma arrayElement)
+  (let loop ([ks (kids-of el)])
+    (cond [(null? ks) (void)]
+          [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'arrayElement))
+           (define name (extract-array-element-name (car ks) tk-type tk-value))
+           (when name (set! names (cons name names)))
+           (loop (cdr ks))]
+          [(pair? (car ks))
+           (for ([g (car ks)] #:when (cst-node? g))
+             (define ae (find-kid g 'arrayElement))
+             (when ae
+               (define name (extract-array-element-name ae tk-type tk-value))
+               (when name (set! names (cons name names)))))
+           (loop (cdr ks))]
+          [else (loop (cdr ks))]))
+  (reverse names))
+
+;; Extract a single identifier from an arrayElement CST node.
+(define (extract-array-element-name node tk-type tk-value)
+  ;; arrayElement -> (group singleExpression)?
+  (define grp (find-kid node 'group))
+  (and grp
+       (let* ([se (find-kid grp 'singleExpression)]
+              [ident (and se (or (find-kid se 'identifier)
+                                 (let ([in (find-kid se 'identifierName)])
+                                   (and in (find-kid in 'identifier)))))])
+         (and ident
+              (let ([tok (first (kids-of ident))])
+                (and (tok? tok tk-type) (eq? (tk-type tok) 'Identifier)
+                     (uir-symbol (tk-value tok))))))))
+
+;; Extract binding names from an objectLiteral CST node for destructuring.
+(define (extract-object-binding-names node tk-type tk-value)
+  (define inner-group (find-kid node 'group))
+  (unless inner-group '())
+  (define names '())
+  (let loop ([ks (kids-of inner-group)])
+    (cond [(null? ks) (void)]
+          [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'propertyAssignment))
+           (define name (extract-prop-binding-name (car ks) tk-type tk-value))
+           (when name (set! names (cons name names)))
+           (loop (cdr ks))]
+          [(pair? (car ks))
+           (for ([g (car ks)] #:when (cst-node? g))
+             (define pa (find-kid g 'propertyAssignment))
+             (when pa
+               (define name (extract-prop-binding-name pa tk-type tk-value))
+               (when name (set! names (cons name names)))))
+           (loop (cdr ks))]
+          [else (loop (cdr ks))]))
+  (reverse names))
+
+(define (extract-prop-binding-name node tk-type tk-value)
+  ;; Forms:
+  ;;   1. Shorthand: propertyAssignment(identifierOrKeyWord(identifier NAME))
+  ;;   2. Renamed:   propertyAssignment(propertyName(...), group(Colon:), singleExpression(..., identifier NEWNAME))
+  ;;   3. Default:   propertyAssignment(propertyName(identifierName(identifier NAME)), group(Assign=), singleExpression DEFAULT)
+  ;; Priority: check singleExpression for renamed binding, then propertyName/identifierOrKeyWord for shorthand/default
+  (define (find-ident-rec n)
+    (or (find-kid n 'identifier)
+        (let ([in (find-kid n 'identifierName)])
+          (and in (or (find-ident-rec in)
+                      (find-kid in 'identifier))))
+        (let ([se (find-kid n 'singleExpression)])
+          (and se (find-ident-rec se)))))
+  (define (make-sym n)
+    (and n
+         (let ([tok (first (kids-of n))])
+           (and (tok? tok tk-type) (eq? (tk-type tok) 'Identifier)
+                (uir-symbol (tk-value tok))))))
+  (or
+   ;; Renamed: binding name from right-hand singleExpression
+   (let ([se (find-kid node 'singleExpression)])
+     (and se (make-sym (find-ident-rec se))))
+   ;; Shorthand/default: binding name from propertyName or identifierOrKeyWord
+   (let* ([prop (or (find-kid node 'propertyName)
+                    (find-kid node 'identifierOrKeyWord))]
+          [ident (and prop (find-ident-rec prop))])
+     (make-sym ident))))
 
 (define (lower-fn-decl node tk-type tk-value)
   (define kids (kids-of node))
@@ -290,11 +372,16 @@
   ;; TypeScript: parameters are in callSignature -> parameterList
   (define cs (find-kid node 'callSignature))
   (define pl (and cs (find-kid cs 'parameterList)))
-  (define params
+  (define-values (params param-extractions)
     (if pl
         (lower-formal-params pl tk-type tk-value)
-        '()))
-  (define fn-uir (uir-fn #f params body #f))
+        (values '() '())))
+  ;; If destructured params were found, prepend their extraction bindings to body
+  (define eff-body
+    (if (null? param-extractions)
+        body
+        (uir-block (append param-extractions (uir-block-stmts body)))))
+  (define fn-uir (uir-fn #f params eff-body #f))
   (cond [is-async (uir-set! name (uir-call (uir-symbol "async-fn") (list fn-uir)))]
         [is-generator (uir-set! name (uir-call (uir-symbol "gen-fn") (list fn-uir)))]
         [else (uir-set! name fn-uir)]))
@@ -305,6 +392,8 @@
 
 (define (lower-formal-params fpl tk-type tk-value)
   (define params '())
+  (define extractions '())
+  (define counter 0)
   (define (extract-name k)
     ;; Try various paths to find the identifier name
     ;; k could be parameter, requiredParameter, optionalParameter, restParameter, formalParameterArg
@@ -317,14 +406,123 @@
                    (find-ident (find-kid n 'optionalParameter))
                    (find-ident (find-kid n 'restParameter))))))
     (define io (find-ident k))
-    (when io
-      (let* ([ident (or (find-kid io 'identifier)
-                        (let ([in (find-kid io 'identifierName)])
-                          (and in (find-kid in 'identifier)))
-                        io)]
-             [tok (and ident (first (kids-of ident)))])
-        (when (and tok (tok? tok tk-type))
-          (set! params (cons (uir-symbol (tk-value tok)) params))))))
+    (if (and io (not (find-kid io 'bindingPattern)))
+        ;; Simple param (not destructured) - extract token name directly
+        (let* ([ident (or (find-kid io 'identifier)
+                          (let ([in (find-kid io 'identifierName)])
+                            (and in (find-kid in 'identifier)))
+                          (let ([iok (find-kid io 'identifierOrKeyWord)])
+                            (and iok (find-kid iok 'identifier)))
+                          io)]
+               [tok (and ident (first (kids-of ident)))])
+          (when (and tok (tok? tok tk-type))
+            (set! params (cons (uir-symbol (tk-value tok)) params))))
+        ;; identifierOrPattern containing bindingPattern (destructuring)
+        (let ([bp (and io (find-kid io 'bindingPattern))])
+          (when bp
+            (define synthetic-name (uir-symbol (format "_p~a" counter)))
+            (set! counter (add1 counter))
+            (set! params (cons synthetic-name params))
+            ;; Collect bindings from the pattern
+            (extract-destructured-bindings bp synthetic-name tk-type tk-value)))))
+
+  ;; Helper: extract bindings from bindingPattern -> objectLiteral or arrayLiteral
+  (define (extract-destructured-bindings bp synthetic tk-type tk-value)
+    ;; bindingPattern often wraps in a group: bindingPattern → group → objectLiteral
+    (define inner (let ([g (find-kid bp 'group)])
+                    (and g g)))
+    (define ol (and inner
+                   (or (find-kid inner 'objectLiteral)
+                       (find-kid inner 'arrayLiteral))))
+    ;; Also try direct (no group wrapper)
+    (define ol2 (or ol (find-kid bp 'objectLiteral) (find-kid bp 'arrayLiteral)))
+    (when ol2
+      (define grp (find-kid ol2 'group))
+      (when grp
+        (let loop ([ks (kids-of grp)])
+          (cond [(null? ks) (void)]
+                [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'propertyAssignment))
+                 (extract-destructured-prop (car ks) synthetic tk-type tk-value)
+                 (loop (cdr ks))]
+                [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'singleExpression))
+                 ;; array destructuring element
+                 (define ident (extract-ident-from (car ks) tk-type tk-value))
+                 (when ident
+                   (set! extractions
+                         (cons (uir-set! (uir-symbol ident)
+                                         (uir-get synthetic (uir-number (length extractions))))
+                               extractions)))
+                 (loop (cdr ks))]
+                [(pair? (car ks))
+                 (let ([flat-items '()])
+                   (for ([g (car ks)] #:when (cst-node? g))
+                     (if (eq? (tag-of g) 'group)
+                         (set! flat-items (append flat-items (kids-of g)))
+                         (set! flat-items (append flat-items (list g)))))
+                   (loop (append flat-items (cdr ks))))]
+                [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'group))
+                 ;; Unwrap nested group (comma-separated tail)
+                 (loop (append (kids-of (car ks)) (cdr ks)))]
+                [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'elementList))
+                 (loop (append (kids-of (car ks)) (cdr ks)))]
+                [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'arrayElement))
+                 (define ae-name (extract-array-element-name (car ks) tk-type tk-value))
+                 (when ae-name
+                   (set! extractions
+                         (cons (uir-set! ae-name
+                                         (uir-get synthetic (uir-number (length extractions))))
+                               extractions)))
+                 (loop (cdr ks))]
+                [else (loop (cdr ks))])))))
+
+  (define (extract-destructured-prop pa synthetic tk-type tk-value)
+    ;; propertyAssignment in binding pattern: key [Colon value]?
+    ;; Simple: identifierOrKeyWord(name) -> (uir-set! name (uir-get _p0 'name))
+    ;; Renamed: identifierOrKeyWord(localName) Colon singleExpression(remoteName)
+    (define ks (kids-of pa))
+    ;; Find key (first non-token cst-node)
+    (define key-node (for/or ([k ks] #:when (cst-node? k)) k))
+    (when key-node
+      (define local-name (extract-ident-from key-node tk-type tk-value))
+      (when local-name
+        ;; Check if there's a colon (renamed binding)
+        (define colon-idx (for/or ([i (in-naturals)] [k ks])
+                            (and (tok? k tk-type) (eq? (tk-type k) 'Colon) i)))
+        (define source-prop
+          (if colon-idx
+              ;; Find the singleExpression after the colon
+              (let loop ([i (add1 colon-idx)])
+                (if (>= i (length ks))
+                    local-name
+                    (let ([k (list-ref ks i)])
+                      (if (and (cst-node? k) (eq? (tag-of k) 'singleExpression))
+                          (extract-ident-from k tk-type tk-value)
+                          (loop (add1 i))))))
+              local-name))
+        (set! extractions
+              (cons (uir-set! (uir-symbol local-name)
+                              (uir-get synthetic (uir-string source-prop)))
+                    extractions)))))
+
+  (define (extract-ident-from node tk-type tk-value)
+    ;; Extract an identifier string from a node (identifierOrKeyWord, identifierName, or singleExpression)
+    (define ident-node
+      (or (find-kid node 'identifier)
+          (let ([in (find-kid node 'identifierName)])
+            (and in (find-kid in 'identifier)))
+          ;; If node itself is identifierOrKeyWord, look inside it
+          (and (eq? (tag-of node) 'identifierOrKeyWord)
+               (or (find-kid node 'identifier)
+                   (let ([in (find-kid node 'identifierName)])
+                     (and in (find-kid in 'identifier)))))
+          (let ([iok (find-kid node 'identifierOrKeyWord)])
+            (and iok (or (find-kid iok 'identifier)
+                         (let ([in (find-kid iok 'identifierName)])
+                           (and in (find-kid in 'identifier))))))))
+    (and ident-node
+         (let ([tok (first (kids-of ident-node))])
+           (and (tok? tok tk-type) (tk-value tok)))))
+
   (let loop ([ks (kids-of fpl)])
     (cond [(null? ks) (void)]
           [(and (cst-node? (car ks))
@@ -335,8 +533,11 @@
              (when (member (tag-of g) '(parameter formalParameterArg restParameter))
                (extract-name g)))
            (loop (cdr ks))]
+          [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) 'group))
+           ;; Unwrap group (comma-separated tail: (Comma param)+)
+           (loop (append (kids-of (car ks)) (cdr ks)))]
           [else (loop (cdr ks))]))
-  (reverse params))
+  (values (reverse params) (reverse extractions)))
 
 (define (lower-return-stmt node tk-type tk-value)
   (define grp (find-kid node 'group))
@@ -643,468 +844,134 @@
             (uir-symbol "?")))
       (uir-symbol "?")))
 
-;; ── Expressions ──────────────────────────────────────────────────────
-
-(define (lower-expression-sequence node tk-type tk-value)
-  (cond [(not node) (uir-null)]
-        [(cst-node? node)
-         (case (tag-of node)
-           [(expressionSequence)
-            (define kid (first (cst-kids node)))
-            (lower-single-expression kid tk-type tk-value)]
-           [(singleExpression) (lower-single-expression node tk-type tk-value)]
-           [else (uir-null)])]
-        [else (uir-null)]))
-
-(define (lower-single-expression node tk-type tk-value)
-  (define kids (kids-of node))
-  (define (unary-prefix? k0) (and (tok? k0 tk-type) (cst-node? (second kids))))
-  (define (unary-postfix? k0 k1) (and (cst-node? k0) (tok? k1 tk-type)))
-  (cond [(= (length kids) 1)
-         (lower-expr-atom (first kids) tk-type tk-value)]
-         [(= (length kids) 2)
-          (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'Await))
-                 ;; Await expression: await + expr
-                 (uir-await (lower-single-expression (second kids) tk-type tk-value))]
-                [(unary-prefix? (first kids))
-                ;; Unary prefix: op + expr
-                (define raw (tk-value (first kids)))
-                (define op-sym
-                  (if (set-member? (set "++" "--") raw)
-                      (string-append "prefix" raw)
-                      raw))
-                (uir-call (uir-symbol op-sym)
-                          (list (lower-single-expression (second kids) tk-type tk-value)))]
-                [(unary-postfix? (first kids) (second kids))
-                 ;; TypeScript non-null assertion: expr! → just expr
-                 (if (eq? (tk-type (second kids)) 'Not)
-                     (lower-single-expression (first kids) tk-type tk-value)
-                     (let ([op-sym (string-append "postfix" (tk-value (second kids)))])
-                       (uir-call (uir-symbol op-sym)
-                                 (list (lower-single-expression (first kids) tk-type tk-value)))))]
-                [(and (cst-node? (first kids))
-                      (not (tok? (second kids) tk-type))
-                      (not (cst-node? (second kids))))
-                 ;; IdentifierAsExpression: identifierName + null/none trailing context
-                 (lower-expr-atom (first kids) tk-type tk-value)]
-                [else
-                 ;; Detect TS infix: left + (operator . right) nested in right node
-                 (define left-kid (first kids))
-                 (define right-kid (second kids))
-                 (cond [(and (cst-node? right-kid) (eq? (tag-of right-kid) 'singleExpression)
-                             (not (null? (kids-of right-kid)))
-                             (tok? (first (kids-of right-kid)) tk-type)
-                             ;; Infix: 2 kids (op token, right operand). Call: 3+ kids (paren, args, paren).
-                             (= (length (kids-of right-kid)) 2)
-                             (cst-node? (second (kids-of right-kid))))
-                        (define op (tk-value (first (kids-of right-kid))))
-                        (define rhs (second (kids-of right-kid)))
-                        (uir-call (uir-symbol op)
-                                  (list (lower-single-expression left-kid tk-type tk-value)
-                                        (lower-single-expression rhs tk-type tk-value)))]
-                        [else
-                         ;; Function call: callee + arguments
-                         (define callee (lower-single-expression (first kids) tk-type tk-value))
-                         (define args-node (second kids))
-                         (cond [(and (cst-node? args-node) (eq? (tag-of args-node) 'arguments))
-                                (uir-call callee (lower-arguments args-node tk-type tk-value))]
-                               [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
-                                     (>= (length (kids-of args-node)) 3)
-                                     (tok? (first (kids-of args-node)) tk-type)
-                                     (eq? (tk-type (first (kids-of args-node))) 'OpenParen))
-                                ;; TS call: callee + singleExpression(OpenParen, expressionSequence, CloseParen)
-                                (define inner-kids (kids-of args-node))
-                                (define args-es (second inner-kids))
-                                (define arg-exprs
-                                  (let loop ([ks (kids-of args-es)] [acc '()])
-                                    (cond [(null? ks) (reverse acc)]
-                                          [(cst-node? (car ks))
-                                           (loop (cdr ks)
-                                                 (cons (lower-single-expression (car ks) tk-type tk-value) acc))]
-                                          [(pair? (car ks))
-                                           ;; Comma-separated remaining args wrapped in groups
-                                           (define more-args
-                                             (for/list ([g (car ks)] #:when (cst-node? g))
-                                               (define inner (second (kids-of g)))
-                                               (lower-single-expression inner tk-type tk-value)))
-                                           (loop (cdr ks) (append (reverse more-args) acc))]
-                                          [else (loop (cdr ks) acc)])))
-                                (uir-call callee arg-exprs)]
-                               [else (uir-null)])])])]
-        [(= (length kids) 3)
-         (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
-                (cond
-                  ;; new.target
-                  [(and (tok? (second kids) tk-type) (eq? (tk-type (second kids)) 'Dot))
-                   (define target (lower-single-expression (third kids) tk-type tk-value))
-                   (uir-call (uir-symbol "dot") (list (uir-symbol "new") target))]
-                  ;; new Foo(args) — but parser may nest call inside second kid
-                  [else
-                   (define snd (second kids))
-                   (define-values (class-name args)
-                     (cond
-                       ;; Case: second kid is singleExpression wrapping [classExpr, arguments]
-                       ;; e.g. new Date() → [New, singleExpression([Date, arguments]), 'none]
-                       [(and (cst-node? snd) (eq? (tag-of snd) 'singleExpression)
-                             (= (length (kids-of snd)) 2)
-                             (let ([snd-kids (kids-of snd)])
-                               (and (cst-node? (first snd-kids))
-                                    (cst-node? (second snd-kids))
-                                    (eq? (tag-of (second snd-kids)) 'arguments))))
-                        (define snd-kids (kids-of snd))
-                        (values (lower-single-expression (first snd-kids) tk-type tk-value)
-                                (lower-arguments (second snd-kids) tk-type tk-value))]
-                       [else
-                        (values (lower-single-expression snd tk-type tk-value)
-                                (let ([args-node (third kids)])
-                                  (if (cst-node? args-node)
-                                      (lower-arguments args-node tk-type tk-value)
-                                      '())))]))
-                   (uir-new class-name args)])]
-                               [else
-                 ;; Binary infix: left + op + right
-                 (define left (lower-single-expression (first kids) tk-type tk-value))
-                 (define op-elt (second kids))
-                 (define right (lower-single-expression (third kids) tk-type tk-value))
-                 ;; Extract operator token: handle nested singleExpression -> identifierName -> identifier -> token
-                 (define op-tok
-                   (let loop ([n op-elt])
-                     (cond [(tok? n tk-type) n]
-                           [(cst-node? n)
-                            (let ([k (first (kids-of n))])
-                              (if (tok? k tk-type) k (loop k)))]
-                           [else #f])))
-                 ;; TypeScript as-expression: left as type -> just left
-                 (if (and op-tok (tok? op-tok tk-type) (eq? (tk-type op-tok) (quote As)))
-                     left
-                     (if (and op-tok (tok? op-tok tk-type))
-                         (uir-call (uir-symbol (tk-value op-tok))
-                                   (list left right))
-                         (uir-null)))])]        [(>= (length kids) 5)
-         (cond [(and (tok? (second kids) tk-type) (eq? (tk-type (second kids)) 'QuestionMark))
-                ;; Ternary: test ? consequent : alternate
-                (uir-if (lower-single-expression (first kids) tk-type tk-value)
-                        (lower-single-expression (third kids) tk-type tk-value)
-                        (lower-single-expression (fifth kids) tk-type tk-value))]
-               [else
-                 ;; Member access: object + (Dot/OpenBracket) + property/key
-                 (define obj (lower-single-expression (first kids) tk-type tk-value))
-                 (define op-elt (third kids))
-                 (cond [(and (tok? op-elt tk-type) (eq? (tk-type op-elt) 'Dot))
-                        (uir-call (uir-symbol "dot")
-                                  (list obj (uir-symbol (lower-identifier-name (list-ref kids 4) tk-type tk-value))))]
-                       [(and (tok? op-elt tk-type) (eq? (tk-type op-elt) 'OpenBracket))
-                        (uir-call (uir-symbol "index")
-                                  (list obj (lower-expression-sequence (list-ref kids 3) tk-type tk-value)))]
-                       [else
-                        ;; TS: extra wrapper nodes. Try scanning for the op token.
-                        (define kid-count (length kids))
-                        (define op-idx
-                          (for/or ([i (in-range 1 (sub1 kid-count))]
-                                   [k (in-list (drop kids 1))]
-                                   #:when (and (tok? k tk-type)
-                                               (member (tk-type k) '(Dot OpenBracket))))
-                            i))
-                        (if op-idx
-                            (cond [(eq? (tk-type (list-ref kids op-idx)) 'Dot)
-                                   (define left (lower-single-expression (list-ref kids (sub1 op-idx)) tk-type tk-value))
-                                   (define right-node (list-ref kids (add1 op-idx)))
-                                   (define right
-                                     (if (cst-node? right-node)
-                                         (uir-symbol (lower-identifier-name right-node tk-type tk-value))
-                                         (uir-symbol "?")))
-                                   (uir-call (uir-symbol "dot") (list left right))]
-                                  [(eq? (tk-type (list-ref kids op-idx)) 'OpenBracket)
-                                   (define left (lower-single-expression (list-ref kids (sub1 op-idx)) tk-type tk-value))
-                                   (define seq (list-ref kids (add1 op-idx)))
-                                   (uir-call (uir-symbol "index") (list left (lower-expression-sequence seq tk-type tk-value)))]
-                                  [else (uir-null)])
-                            (uir-null))])])]
-        [else (uir-null)]))
-
-(define (lower-expr-atom value tk-type tk-value)
-  (cond [(cst-node? value)
-         (case (tag-of value)
-           [(literal) (lower-literal value tk-type tk-value)]
-            [(identifier) (lower-identifier value tk-type tk-value)]
-            [(identifierName)
-             ;; TS: identifierName -> identifier | reservedWord | ...
-             (define inner (first (kids-of value)))
-             (cond [(tok? inner tk-type)
-                    (case (tk-type inner)
-                      [(BooleanLiteral) (uir-bool (string=? (tk-value inner) "true"))]
-                      [(NullLiteral) (uir-null)]
-                      [else (uir-var (uir-symbol (tk-value inner)))])]
-                   [(cst-node? inner)
-                    (case (tag-of inner)
-                      [(reservedWord)
-                       (define tok (first (kids-of inner)))
-                       (cond [(tok? tok tk-type)
-                              (case (tk-type tok)
-                                [(BooleanLiteral) (uir-bool (string=? (tk-value tok) "true"))]
-                                [(NullLiteral) (uir-null)]
-                                [else (uir-var (uir-symbol (tk-value tok)))])]
-                             [else (uir-null)])]
-                      [(identifier)
-                       (define tok (first (kids-of inner)))
-                       (if (tok? tok tk-type)
-                           (uir-var (uir-symbol (tk-value tok)))
-                           (uir-null))]
-                      [else (uir-null)])]
-                   [else (uir-null)])]
-           [(singleExpression) (lower-single-expression value tk-type tk-value)]
-            [(objectLiteral) (lower-object-literal value tk-type tk-value)]
-            [(arrayLiteral) (lower-array-literal value tk-type tk-value)]
-            [(anonymousFunction) (lower-arrow-fn value tk-type tk-value)]
-            [(yieldStatement) (lower-yield-stmt value tk-type tk-value)]
-            [else (uir-null)])]
-        [(tok? value tk-type)
-         (uir-symbol (tk-value value))]
-        [else (uir-null)]))
-
-(define (lower-identifier node tk-type tk-value)
-  (define tok (first (kids-of node)))
-  (uir-var (uir-symbol (tk-value tok))))
-
-(define (lower-literal node tk-type tk-value)
-  (define kid (first (kids-of node)))
-  (cond [(cst-node? kid)
-         (case (tag-of kid)
-           [(numericLiteral)
-            (uir-number (tk-value (first (kids-of kid))))]
-           [(stringLiteral)
-            (uir-string (tk-value (first (kids-of kid))))]
-           [(regularExpressionLiteral)
-            (uir-call (uir-symbol "regex") (list (uir-string (tk-value (first (kids-of kid))))))]
-           [else (uir-null)])]
-        [(tok? kid tk-type)
-         (case (tk-type kid)
-           [(BooleanLiteral)
-            (uir-bool (string=? (tk-value kid) "true"))]
-            [(NullLiteral) (uir-null)]
-            [(RegularExpressionLiteral)
-             (uir-call (uir-symbol "regex") (list (uir-string (tk-value kid))))]
-            [(StringLiteral)
-            (define raw (tk-value kid))
-            (define len (string-length raw))
-            (if (and (> len 1)
-                     (or (char=? (string-ref raw 0) (string-ref raw (sub1 len)))
-                         (eqv? (string-ref raw 0) #\"))
-                     (or (char=? (string-ref raw 0) #\")
-                         (char=? (string-ref raw 0) #\')))
-                (uir-string (substring raw 1 (sub1 len)))
-                (uir-string raw))]
-           [else (uir-null)])]
-        [else (uir-null)]))
-
-(define (lower-arguments node tk-type tk-value)
-  (define kids (kids-of node))
-  (define arg-group (second kids))
-  (cond [(and (cst-node? arg-group) (eq? (tag-of arg-group) 'group))
-         (define grp-kids (kids-of arg-group))
-         (define arg-nodes
-           (let loop ([ks grp-kids] [acc '()])
-             (cond [(null? ks) acc]
-                    [(and (cst-node? (car ks))
-                          (member (tag-of (car ks)) '(argument argumentList)))
-                     (if (eq? (tag-of (car ks)) 'argument)
-                         (loop (cdr ks) (append acc (list (car ks))))
-                         ;; TS wraps arguments in argumentList; dive into its kids
-                         (loop (append (kids-of (car ks)) (cdr ks)) acc))]
-                   [(pair? (car ks))
-                    (define tail-args
-                      (for/list ([g (car ks)] #:when (cst-node? g))
-                        (find-kid g 'argument)))
-                    (loop (cdr ks) (append acc tail-args))]
-                   [else (loop (cdr ks) acc)])))
-          (map (λ (a)
-                 (define first-kid (first (kids-of a)))
-                 (cond [(and (tok? first-kid tk-type) (eq? (tk-type first-kid) 'Ellipsis))
-                        ;; Spread argument: ...expr
-                        (define grp (find-kid a 'group))
-                        (define se (and grp (first (cst-kids grp))))
-                        (if se
-                            (uir-call (uir-symbol "spread") (list (lower-single-expression se tk-type tk-value)))
-                            (uir-null))]
-                       [else
-                        (define grp (first (cst-kids a)))
-                        (define se (and (cst-node? grp) (eq? (tag-of grp) 'group)
-                                        (first (cst-kids grp))))
-                        (if se
-                            (lower-single-expression se tk-type tk-value)
-                            (uir-null))]))
-               arg-nodes)]
-        [else '()]))
-
-(define (lower-identifier-name node tk-type tk-value)
-  (define ident (or (find-kid node 'identifier)
-                    (let ([in (find-kid node 'identifierName)])
-                      (and in (find-kid in 'identifier)))))
-  (if ident
-      (tk-value (first (kids-of ident)))
-      "?"))
-
-
-
-
-(define (lower-getter-setter-name node tk-type tk-value)
-  (define cen (find-kid node (quote classElementName)))
-  (if cen
-      (lower-identifier-name (find-kid cen (quote propertyName)) tk-type tk-value)
-      (let ([ident (find-kid node (quote identifier))])
-        (if ident (tk-value (first (kids-of ident))) "?"))))
-
-(define (lower-object-literal node tk-type tk-value)
-  (define grp (find-kid node (quote group)))
-  (define entries (quote ()))
-  (define (extract-prop k)
-    (define ks (kids-of k))
-    ;; Check for spread: { ...expr }
-    (define is-spread (and (>= (length ks) 2)
-                           (tok? (first ks) tk-type)
-                           (eq? (tk-type (first ks)) 'Ellipsis)))
-    (define pname (and (not is-spread) (find-kid k (quote propertyName))))
-    (define se (and (not is-spread) (find-kid k (quote singleExpression))))
-    (define fb (and (not is-spread) (find-kid k (quote functionBody))))
-    (define getter (and (not is-spread) (find-kid k (quote getter))))
-    (define setter (and (not is-spread) (find-kid k (quote setter))))
-    ;; Check for computed property: {[expr]: val}
-    ;; The grammar matches this as propertyName('[' singleExpression ']') : singleExpression
-    ;; So pname is non-#f but wraps a computed key.
-    (define is-computed
-      (and pname
-           (not getter) (not setter)
-           (>= (length (kids-of pname)) 1)
-           (tok? (first (kids-of pname)) tk-type)
-           (string=? (tk-value (first (kids-of pname))) "[")))
-    ;; Check for shorthand: {x}
-    (define is-shorthand
-      (and (not is-spread) (not is-computed) (not pname) (not getter) (not setter) (not fb) se))
-    (cond
-      [is-spread
-       (define spread-se (find-kid k (quote singleExpression)))
-       (when spread-se
-         (set! entries (cons (cons (uir-string "...")
-                                   (uir-call (uir-symbol "spread")
-                                             (list (lower-single-expression spread-se tk-type tk-value))))
-                             entries)))]
-      [is-computed
-       ;; pname = propertyName wrapping '[' singleExpression ']'
-       (define pname-ks (kids-of pname))
-       (define key-expr-node (second pname-ks))
-       (when (and (cst-node? key-expr-node) se)
-         (define key-uir (lower-single-expression key-expr-node tk-type tk-value))
-         (define val-uir (lower-single-expression se tk-type tk-value))
-         (set! entries (cons (cons key-uir val-uir) entries)))]
-      [is-shorthand
-       ;; Shorthand {x} is {x: x}. Extract identifier name from CST.
-       (define ident-node
-         (or (find-kid se (quote identifier))
-             (find-kid se (quote identifierName))))
-       (define name
-         (if ident-node
-             (uir-string (tk-value (first (kids-of ident-node))))
-             (uir-string "?")))
-       (define shorthand-uir (lower-single-expression se tk-type tk-value))
-       (set! entries (cons (cons name shorthand-uir) entries))]
-      [getter
-       (define getter-name (lower-getter-setter-name getter tk-type tk-value))
-       (define body (lower-fn-body fb tk-type tk-value))
-       (set! entries (cons (cons (uir-string (string-append "get " getter-name))
-                                 (uir-fn #f (quote ()) body #f))
-                           entries))]
-      [setter
-       (define setter-name (lower-getter-setter-name setter tk-type tk-value))
-       (define params (list (uir-symbol "v")))
-       (define body (lower-fn-body fb tk-type tk-value))
-       (set! entries (cons (cons (uir-string (string-append "set " setter-name))
-                                 (uir-fn #f params body #f))
-                           entries))]
-      [(and pname fb (not se))
-       (define key (uir-string (lower-identifier-name pname tk-type tk-value)))
-       (define body (lower-fn-body fb tk-type tk-value))
-       (set! entries (cons (cons key (uir-fn #f (quote ()) body #f)) entries))]
-      [(and pname se)
-       (let ([key (uir-string (lower-identifier-name pname tk-type tk-value))]
-             [val (lower-single-expression se tk-type tk-value)])
-         (set! entries (cons (cons key val) entries)))]))
-  (when grp
-    (let loop ([ks (kids-of grp)])
-      (cond [(null? ks) (void)]
-            [(and (cst-node? (car ks)) (eq? (tag-of (car ks)) (quote propertyAssignment)))
-             (extract-prop (car ks))
-             (loop (cdr ks))]
-            [(pair? (car ks))
-             (for ([g (car ks)] #:when (cst-node? g))
-               (define pa (find-kid g (quote propertyAssignment)))
-               (when pa (extract-prop pa)))
-             (loop (cdr ks))]
-            [else (loop (cdr ks))])))
-  (uir-record (reverse entries)))
-
-(define (lower-array-literal node tk-type tk-value)
-  (define grp (find-kid node (quote group)))
-  (define elist (and grp (find-kid grp (quote elementList))))
-  (define items (quote ()))
-  (define (extract-array-element k)
-    (define kids (kids-of k))
-    (cond [(and (>= (length kids) 2)
-                (tok? (first kids) tk-type)
-                (eq? (tk-type (first kids)) (quote Ellipsis)))
-           ;; Spread element: ...expr
-           (define se (find-kid k (quote singleExpression)))
-           (when se
-             (set! items (cons (uir-call (uir-symbol "spread")
-                                         (list (lower-single-expression se tk-type tk-value)))
-                               items)))]
-          [else
-           (define se (find-kid k (quote singleExpression)))
-           (when se
-             (set! items (cons (lower-single-expression se tk-type tk-value) items)))]))
-  (when elist
-    (for ([k (kids-of elist)])
-      (cond
-        ((cst-node? k)
-         (case (tag-of k)
-           ((arrayElement) (extract-array-element k))))
-        ((pair? k)
-         (for ([g k] #:when (cst-node? g))
-           (define ae (find-kid g (quote arrayElement)))
-           (when ae (extract-array-element ae)))))))
-  (uir-list (reverse items)))
 
 (define (lower-arrow-fn node tk-type tk-value)
   ;; Distinguish: arrow has arrowFunctionParameters, function expr has Function_ token.
-  ;; TS: anonymousFunction may wrap arrowFunctionDeclaration; check inside that too.
+  ;; TS: anonymousFunction may wrap arrowFunctionDeclaration or functionDeclaration; check inside.
   (define afd (find-kid node (quote arrowFunctionDeclaration)))
   (define arrow-params-node
     (or (find-kid node (quote arrowFunctionParameters))
         (and afd (find-kid afd (quote arrowFunctionParameters)))))
   (if arrow-params-node
       (lower-arrow-fn-impl (or afd node) tk-type tk-value)
-      (lower-function-expr node tk-type tk-value)))
+      ;; Unwrap functionDeclaration from anonymousFunction for named function expressions
+      (let ([fd (find-kid node (quote functionDeclaration))])
+        (lower-function-expr (or fd node) tk-type tk-value))))
 
 (define (lower-arrow-fn-impl node tk-type tk-value)
   (define params-node (find-kid node (quote arrowFunctionParameters)))
   (define body-node (find-kid node (quote arrowFunctionBody)))
   (define params (quote ()))
+  (define extractions (quote ()))
+  (define counter 0)
   (define (extract-param k)
     (define assignable (find-kid k (quote assignable)))
     (when assignable
       (let ([ident (find-kid assignable (quote identifier))])
-        (when ident
-          (set! params (cons (uir-symbol (tk-value (first (kids-of ident)))) params))))))
+        (if ident
+            (set! params (cons (uir-symbol (tk-value (first (kids-of ident)))) params))
+            (let ([ol (or (find-kid assignable (quote objectLiteral))
+                          (find-kid assignable (quote arrayLiteral)))])
+              (when ol
+                (define synthetic-name (uir-symbol (format "_p~a" counter)))
+                (set! counter (add1 counter))
+                (set! params (cons synthetic-name params))
+                (extract-destructured-bindings ol synthetic-name)))))))
   (define (extract-rest-param k)
     (define se (find-kid k (quote singleExpression)))
     (when se
       (let ([ident (find-kid se (quote identifier))])
         (if ident
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (uir-symbol (tk-value (first (kids-of ident))))))
-                               params))
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (lower-single-expression se tk-type tk-value)))
-                               params))))))
+            (set! params (cons (uir-spread (uir-symbol (tk-value (first (kids-of ident)))))
+                              params))
+            (set! params (cons (uir-spread (lower-single-expression se tk-type tk-value))
+                              params))))))
+  ;; Helpers for destructured param extraction
+  (define (extract-destructured-bindings ol synthetic-name)
+    (define grp (find-kid ol (quote group)))
+    (when grp
+      (let loop ([ks (kids-of grp)])
+        (cond [(null? ks) (void)]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote propertyAssignment)))
+               (extract-destructured-prop (car ks) synthetic-name)
+               (loop (cdr ks))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote singleExpression)))
+               (define ename (extract-ident-from-expr (car ks)))
+               (when ename
+                 (set! extractions
+                       (cons (uir-set! (uir-symbol ename)
+                                       (uir-get synthetic-name (uir-number (length extractions))))
+                             extractions)))
+               (loop (cdr ks))]
+              [(pair? (car ks))
+               (let ([flat-items '()])
+                 (for ([g (car ks)] #:when (cst-node? g))
+                   (if (eq? (tag-of g) (quote group))
+                       (set! flat-items (append flat-items (kids-of g)))
+                       (set! flat-items (append flat-items (list g)))))
+                 (loop (append flat-items (cdr ks))))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote group)))
+               (loop (append (kids-of (car ks)) (cdr ks)))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote elementList)))
+               (loop (append (kids-of (car ks)) (cdr ks)))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote arrayElement)))
+               (define ae-name (extract-array-element-name (car ks) tk-type tk-value))
+               (when ae-name
+                 (set! extractions
+                       (cons (uir-set! ae-name
+                                       (uir-get synthetic-name (uir-number (length extractions))))
+                             extractions)))
+               (loop (cdr ks))]
+              [else (loop (cdr ks))]))))
+  (define (extract-destructured-prop pa synthetic-name)
+    (define ks (kids-of pa))
+    (define key-node (for/or ([k ks] #:when (cst-node? k)) k))
+    (when key-node
+      (define source-prop (extract-ident-from-expr key-node))
+      (when source-prop
+        ;; Check for colon: either direct token or nested in a group
+        (define colon-idx
+          (for/or ([i (in-naturals)] [k ks])
+            (or (and (tok? k tk-type) (eq? (tk-type k) 'Colon) i)
+                (and (cst-node? k)
+                     (eq? (tag-of k) 'group)
+                     (for/or ([g (kids-of k)])
+                       (and (tok? g tk-type) (eq? (tk-type g) 'Colon) i))))))
+        (define local-name
+          (if colon-idx
+              (let loop2 ([i (add1 colon-idx)])
+                (if (>= i (length ks))
+                    source-prop
+                    (let ([k (list-ref ks i)])
+                      (if (and (cst-node? k) (eq? (tag-of k) 'singleExpression))
+                          (extract-ident-from-expr k)
+                          (loop2 (add1 i))))))
+              source-prop))
+        (set! extractions
+              (cons (uir-set! (uir-symbol local-name)
+                              (uir-get synthetic-name (uir-string source-prop)))
+                    extractions)))))
+  (define (extract-ident-from-expr node)
+    (define ident-node
+      (or (find-kid node 'identifier)
+          (let ([in (find-kid node 'identifierName)])
+            (and in (find-kid in 'identifier)))
+          (and (eq? (tag-of node) 'identifierOrKeyWord)
+               (or (find-kid node 'identifier)
+                   (let ([in (find-kid node 'identifierName)])
+                     (and in (find-kid in 'identifier)))))
+          (let ([iok (find-kid node 'identifierOrKeyWord)])
+            (and iok (or (find-kid iok 'identifier)
+                         (let ([in (find-kid iok 'identifierName)])
+                           (and in (find-kid in 'identifier))))))))
+    (and ident-node
+         (let ([tok (first (kids-of ident-node))])
+           (and (tok? tok tk-type) (tk-value tok)))))
   (when params-node
     (define fpl (find-kid params-node (quote formalParameterList)))
     (when fpl
@@ -1140,35 +1007,147 @@
                [else (loop (cdr ks))]))))
    (define body
      (if body-node
-         (let ([se (first (cst-kids body-node))])
-          (lower-single-expression se tk-type tk-value))
+         (let* ([se (first (cst-kids body-node))])
+           (if (cst-node? se)
+               (case (tag-of se)
+                 [(functionBody)
+                  (let ([lst (find-node-or-list se)])
+                    (if lst
+                        (lower-source-elements lst tk-type tk-value)
+                        (uir-block (quote ()))))]
+                 [else (lower-single-expression se tk-type tk-value)])
+               (lower-single-expression se tk-type tk-value)))
         (uir-null)))
-  (uir-call (uir-symbol "=>") (list (uir-list (reverse params)) body)))
+   (define eff-body
+     (if (null? extractions)
+         body
+         (let ([body-stmts (if (eq? (uir-tag body) 'block)
+                              (uir-block-stmts body)
+                              (list body))])
+           (uir-block (append extractions body-stmts)))))
+   (uir-call (uir-symbol "=>") (list (uir-list (reverse params)) eff-body)))
 
 (define (lower-function-expr node tk-type tk-value)
-  ;; Regular function expression: anonymousFunction with Function_ token
+  ;; Regular function expression: anonymousFunction with Function_ token,
+  ;; or functionDeclaration (when unwrapped from anonymousFunction).
   (define params (quote ()))
+  (define extractions (quote ()))
+  (define counter 0)
   (define body (uir-null))
   (define kids (kids-of node))
   ;; kids: [Function_, OpenParen, (params or CloseParen), ...]
   (define (extract-param k)
     (define assignable (find-kid k (quote assignable)))
     (when assignable
-      (define ident (find-kid assignable (quote identifier)))
-      (when ident
-        (set! params (cons (uir-symbol (tk-value (first (kids-of ident)))) params)))))
+      (let ([ident (find-kid assignable (quote identifier))])
+        (if ident
+            (set! params (cons (uir-symbol (tk-value (first (kids-of ident)))) params))
+            (let ([ol (or (find-kid assignable (quote objectLiteral))
+                          (find-kid assignable (quote arrayLiteral)))])
+              (when ol
+                (define synthetic-name (uir-symbol (format "_p~a" counter)))
+                (set! counter (add1 counter))
+                (set! params (cons synthetic-name params))
+                (extract-destructured-bindings ol synthetic-name)))))))
   (define (extract-rest-param k)
     (define se (find-kid k (quote singleExpression)))
     (when se
       (let ([ident (find-kid se (quote identifier))])
         (if ident
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (uir-symbol (tk-value (first (kids-of ident))))))
-                               params))
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (lower-single-expression se tk-type tk-value)))
-                               params))))))
-  (define fpl (find-kid node (quote formalParameterList)))
+            (set! params (cons (uir-spread (uir-symbol (tk-value (first (kids-of ident)))))
+                              params))
+            (set! params (cons (uir-spread (lower-single-expression se tk-type tk-value))
+                              params))))))
+  ;; Helpers for destructured param extraction
+  (define (extract-destructured-bindings ol synthetic-name)
+    (define grp (find-kid ol (quote group)))
+    (when grp
+      (let loop ([ks (kids-of grp)])
+        (cond [(null? ks) (void)]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote propertyAssignment)))
+               (extract-destructured-prop (car ks) synthetic-name)
+               (loop (cdr ks))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote singleExpression)))
+               (define ename (extract-ident-from-expr (car ks)))
+               (when ename
+                 (set! extractions
+                       (cons (uir-set! (uir-symbol ename)
+                                       (uir-get synthetic-name (uir-number (length extractions))))
+                             extractions)))
+               (loop (cdr ks))]
+              [(pair? (car ks))
+               (let ([flat-items '()])
+                 (for ([g (car ks)] #:when (cst-node? g))
+                   (if (eq? (tag-of g) (quote group))
+                       (set! flat-items (append flat-items (kids-of g)))
+                       (set! flat-items (append flat-items (list g)))))
+                 (loop (append flat-items (cdr ks))))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote group)))
+               (loop (append (kids-of (car ks)) (cdr ks)))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote elementList)))
+               (loop (append (kids-of (car ks)) (cdr ks)))]
+              [(and (cst-node? (car ks))
+                    (eq? (tag-of (car ks)) (quote arrayElement)))
+               (define ae-name (extract-array-element-name (car ks) tk-type tk-value))
+               (when ae-name
+                 (set! extractions
+                       (cons (uir-set! ae-name
+                                       (uir-get synthetic-name (uir-number (length extractions))))
+                             extractions)))
+               (loop (cdr ks))]
+              [else (loop (cdr ks))]))))
+  (define (extract-destructured-prop pa synthetic-name)
+    (define ks (kids-of pa))
+    (define key-node (for/or ([k ks] #:when (cst-node? k)) k))
+    (when key-node
+      (define source-prop (extract-ident-from-expr key-node))
+      (when source-prop
+        (define colon-idx
+          (for/or ([i (in-naturals)] [k ks])
+            (or (and (tok? k tk-type) (eq? (tk-type k) 'Colon) i)
+                (and (cst-node? k)
+                     (eq? (tag-of k) 'group)
+                     (for/or ([g (kids-of k)])
+                       (and (tok? g tk-type) (eq? (tk-type g) 'Colon) i))))))
+        (define local-name
+          (if colon-idx
+              (let loop2 ([i (add1 colon-idx)])
+                (if (>= i (length ks))
+                    source-prop
+                    (let ([k (list-ref ks i)])
+                      (if (and (cst-node? k) (eq? (tag-of k) 'singleExpression))
+                          (extract-ident-from-expr k)
+                          (loop2 (add1 i))))))
+              source-prop))
+        (set! extractions
+              (cons (uir-set! (uir-symbol local-name)
+                              (uir-get synthetic-name (uir-string source-prop)))
+                    extractions)))))
+  (define (extract-ident-from-expr node)
+    (define ident-node
+      (or (find-kid node 'identifier)
+          (let ([in (find-kid node 'identifierName)])
+            (and in (find-kid in 'identifier)))
+          (and (eq? (tag-of node) 'identifierOrKeyWord)
+               (or (find-kid node 'identifier)
+                   (let ([in (find-kid node 'identifierName)])
+                     (and in (find-kid in 'identifier)))))
+          (let ([iok (find-kid node 'identifierOrKeyWord)])
+            (and iok (or (find-kid iok 'identifier)
+                         (let ([in (find-kid iok 'identifierName)])
+                           (and in (find-kid in 'identifier))))))))
+    (and ident-node
+         (let ([tok (first (kids-of ident-node))])
+           (and (tok? tok tk-type) (tk-value tok)))))
+  ;; Find formalParameterList: direct child, or inside callSignature → parameterList
+  (define fpl
+    (or (find-kid node (quote formalParameterList))
+        (let ([cs (find-kid node (quote callSignature))])
+          (and cs (find-kid cs (quote parameterList))))))
   (when fpl
     (let loop ([ks (kids-of fpl)])
       (cond [(null? ks) (void)]
@@ -1193,11 +1172,24 @@
                  (extract-rest-param g)))
              (loop (cdr ks))]
             [else (loop (cdr ks))])))
-  (define body-node (find-kid node (quote functionBody)))
+  ;; Find functionBody: direct child, or inside group → group (functionDeclaration wrapper)
+  (define body-node
+    (or (find-kid node (quote functionBody))
+        (let* ([outer (find-kid node (quote group))]
+               [inner (and outer (find-kid outer (quote group)))])
+          (and inner (find-kid inner (quote functionBody))))))
   (when body-node
     (define se (find-node-or-list body-node))
     (set! body (if se (lower-source-elements se tk-type tk-value) (uir-block (quote ())))))
-  (uir-call (uir-symbol "function") (list (uir-list (reverse params)) body)))
+  (define eff-body
+    (if (null? extractions)
+        body
+        (let ([body-stmts (if (eq? (uir-tag body) 'block)
+                             (uir-block-stmts body)
+                             (list body))])
+          (uir-block (append extractions body-stmts)))))
+  (uir-call (uir-symbol "function") (list (uir-list (reverse params)) eff-body)))
+
 
 ;; ── ES Modules (import/export) ───────────────────────────────────────
 
@@ -1560,5 +1552,10 @@
   (if inner
       (lower-statement inner tk-type tk-value)
       (uir-null)))
+
+;; Wire up cross-module hooks from expr.rkt (must be after all definitions)
+(arrow-fn-lowerer lower-arrow-fn)
+(yield-stmt-lowerer lower-yield-stmt)
+(fn-body-lowerer lower-fn-body)
 
 

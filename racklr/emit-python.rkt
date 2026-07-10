@@ -385,6 +385,8 @@
                 (string-append base-str "[" (emit-expr field) "]")))]
         [(uir-paren? uir)
           (string-append "(" (emit-expr (uir-paren-inner uir)) ")")]
+        [(uir-spread? uir)
+          (string-append "*(" (emit-expr (uir-spread-expr uir)) ")")]
         [else (format "<?~a>" (uir-tag uir))]))
 
 ;; ── Match/case emission ─────────────────────────────────────────────

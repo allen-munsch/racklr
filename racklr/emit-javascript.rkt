@@ -17,7 +17,15 @@
 (define (react-event->dom name)
   (string-downcase (substring name 2)))
 
-;; ── UIR → JavaScript text emitter ────────────────────────────────────
+;; Synthetic event wrapper: wraps a handler ref and creates {nativeEvent, preventDefault}
+(define synthetic-event-template
+  "(function(_e){return {nativeEvent:_e,preventDefault:function(){_e.preventDefault();},stopPropagation:function(){_e.stopPropagation();}};})")
+
+(define (wrap-event-handler val-str)
+  ;; val-str is the handler reference, e.g. "_ctx.handleClick"
+  ;; Wrap it to receive a synthetic event
+  (format "function(_e){var _se=~a(_e); (~a)(_se);}"
+          synthetic-event-template val-str))
 
 (define infix-ops
   (set "+" "-" "*" "/" "%" "=" "==" "===" "!=" "!=="
@@ -66,7 +74,7 @@
                 [(react-event-prop? name-str)
                  (format "_el.addEventListener(\"~a\",~a);"
                          (react-event->dom name-str)
-                         val-str)]
+                         (wrap-event-handler val-str))]
                 [else
                  (format "_el.setAttribute(\"~a\",~a);" name-str val-str)]))
             ""))
@@ -137,6 +145,18 @@
     
     [(uir-var name)
      (emit-javascript name)]
+    
+    [(uir-spread expr)
+     (format "...~a" (emit-javascript expr))]
+    
+    [(uir-paren inner)
+     (format "(~a)" (emit-javascript inner))]
+     
+    [(uir-get base field)
+     (define base-str (emit-javascript base))
+     (if (uir-string? field)
+         (format "~a.~a" base-str (uir-string-value field))
+         (format "~a[~a]" base-str (emit-javascript field)))]
     
     [(uir-set! name val)
      (cond [(uir-fn? val)
@@ -234,10 +254,6 @@
              (emit-import args)]
             [(and op-name (string=? op-name "export") (>= (length args) 1))
              (emit-export args)]
-            [(and op-name (string=? op-name "spread") (= (length args) 1))
-             (format "...~a" (emit-javascript (first args)))]
-            [(and op-name (string=? op-name "rest") (= (length args) 1))
-             (format "...~a" (emit-javascript (first args)))]
             [(and op-name (string=? op-name "throw") (= (length args) 1))
              (format "throw ~a" (emit-javascript (first args)))]
              [(and op-name (string=? op-name "try") (= (length args) 4))
@@ -390,6 +406,21 @@
                  (emit-javascript (uir-set!-value body)))]
         [(uir-var? body)
          (format "~a ~a" kind (emit-javascript (uir-var-name body)))]
+        [(and (uir-call? body) (uir-symbol? (uir-call-callee body))
+              (let ([op (uir-symbol-name (uir-call-callee body))])
+                (or (string=? op "array-bind") (string=? op "object-bind"))))
+         (match-define (list names-list rhs) (uir-call-args body))
+         (define names-str
+           (if (uir-list? names-list)
+               (string-join (map emit-javascript (uir-list-items names-list)) ", ")
+               (emit-javascript names-list)))
+         (define bracket-open (if (string=? (uir-symbol-name (uir-call-callee body)) "array-bind") "[" "{"))
+         (define bracket-close (if (string=? (uir-symbol-name (uir-call-callee body)) "array-bind") "]" "}"))
+         (if (uir-null? rhs)
+             (format "~a ~a" kind (format "~a~a~a" bracket-open names-str bracket-close))
+             (format "~a ~a = ~a" kind
+                     (format "~a~a~a" bracket-open names-str bracket-close)
+                     (emit-javascript rhs)))]
         [else (format "~a ~a" kind (emit-javascript body))]))
 
 (define (emit-switch-cases cases-block)
