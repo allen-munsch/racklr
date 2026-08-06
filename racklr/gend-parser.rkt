@@ -310,7 +310,19 @@
         (define code (string->number hex-str 16))
         (string (integer->char code)))))
   ;; Then handle \\t \\n \\r
-  (regexp-replace* #rx"\\\\t" (regexp-replace* #rx"\\\\n" (regexp-replace* #rx"\\\\r" s1 "\r") "\n") "\t"))
+  (define s2 (regexp-replace* #rx"\\\\t" (regexp-replace* #rx"\\\\n" (regexp-replace* #rx"\\\\r" s1 "\r") "\n") "\t"))
+  ;; Convert \\- (escaped hyphen) to a bare - at start of class (right after [).
+  ;; In Racket cc-match, - in the middle of a class is a range operator.
+  ;; By moving to position 1, it is always literal.
+  (define has-hyphen? (regexp-match? #rx"\\\\-" s2))
+  (define no-hyphens (regexp-replace* #rx"\\\\-" s2 ""))
+  (define s3
+    (if (and has-hyphen? (>= (string-length no-hyphens) 1) (char=? (string-ref no-hyphens 0) #\[))
+        (string-append "[" (if (and (>= (string-length no-hyphens) 2) (char=? (string-ref no-hyphens 1) #\^))
+                               (string-append "^" "-" (substring no-hyphens 2))
+                               (string-append "-" (substring no-hyphens 1))))
+        no-hyphens))
+  s3)
 
 ;; Convert ANTLR4 escape sequences in literal strings to actual chars.
 ;; E.g. "\\n" → "\n" (actual newline), "\\\\" → "\\", "\\'" → "'"
@@ -380,11 +392,11 @@
                     (define cat-str (symbol->string cat))
                     (define matches?
                       (cond [(string=? prop \"L\") (char-ci=? (string-ref cat-str 0) #\\L)]
-                            [(string=? prop \"Nl\") (eq? cat 'Nl)]
-                            [(string=? prop \"Mn\") (eq? cat 'Mn)]
-                            [(string=? prop \"Mc\") (eq? cat 'Mc)]
-                            [(string=? prop \"Nd\") (eq? cat 'Nd)]
-                            [(string=? prop \"Pc\") (eq? cat 'Pc)]
+                            [(string=? prop \"Nl\") (eq? cat 'nl)]
+                            [(string=? prop \"Mn\") (eq? cat 'mn)]
+                            [(string=? prop \"Mc\") (eq? cat 'mc)]
+                            [(string=? prop \"Nd\") (eq? cat 'nd)]
+                            [(string=? prop \"Pc\") (eq? cat 'pc)]
                             [else (eprintf \"Warning: unhandled Unicode property ~s~n\" prop) #f]))
                     (and (if is-negated (not matches?) matches?) #t))
                   (find-end (+ j 1))))]
@@ -495,15 +507,17 @@
         ;; Skip non-newline whitespace only; let newlines be matched by NEWLINE rule
         "            [(and (char-whitespace? ch) (not (char=? ch #\\newline)))
               (loop (+ p 1) l (+ c 1) (+ o 1) tks mode mstack pending)]\n"
-        ;; Skip all whitespace including newlines
-        "            [(char-whitespace? ch)
-              (if (char=? ch #\\newline)
-                  (loop (+ p 1) (+ l 1) 1 (+ o 1) tks mode mstack pending)
-                  (loop (+ p 1) l (+ c 1) (+ o 1) tks mode mstack pending))]\n"))
+         ;; Skip all whitespace including newlines (unless in TEMPLATE mode)
+         "            [(and (char-whitespace? ch) (not (eq? mode 'TEMPLATE)))
+               (if (char=? ch #\\newline)
+                   (loop (+ p 1) (+ l 1) 1 (+ o 1) tks mode mstack pending)
+                   (loop (+ p 1) l (+ c 1) (+ o 1) tks mode mstack pending))]\n"))
   (string-append
    (format "(define (~a in)~n" (if indent-tokens? "tokenize-raw" "tokenize"))
-   "   (define il (string-length in))
-   (let loop ([p 0] [l 1] [c 1] [o 0] [tks '()] [mode 'default] [mstack '()] [pending #f])
+    "   (define il (string-length in))
+    (define template-depth (box 0))
+    (define brace-depth (box 0))
+    (let loop ([p 0] [l 1] [c 1] [o 0] [tks '()] [mode 'default] [mstack '()] [pending #f])
      (if (>= p il)
          (let ([final-tks (if pending
                              (cons (token 'UNKNOWN pending (pos l c o) (pos l c o)) tks)
@@ -550,48 +564,93 @@
     (if (regexp-match? #rx"^[a-zA-Z_][a-zA-Z0-9_]*$" raw-name)
         (format "'~a" raw-name)
         (format "(string->symbol ~s)" raw-name)))
-  (define cmd-body (gen-command-body commands token-expr))
+  (define cmd-body (gen-command-body commands token-expr raw-name))
   (format "               (cons ~a-match (lambda (np v) ~a))"
           mangled cmd-body))
 
-(define (gen-command-body commands token-expr)
-  (if (null? commands)
-      (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) mode mstack pending)" token-expr)
-      (let loop ([cmds commands]
-                 [skip? #f]
-                 [more? #f]
-                 [emit-type token-expr]
-                 [next-mode "mode"]
-                 [next-mstack "mstack"]
-                 [next-pending "pending"])
-        (if (null? cmds)
-            (cond [skip? (format "(loop np l c o tks ~a ~a ~a)" next-mode next-mstack next-pending)]
-                  [more? (format "(loop np l c o tks ~a ~a ~a)" next-mode next-mstack next-pending)]
-                  [else (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) ~a ~a ~a)"
-                                emit-type next-mode next-mstack next-pending)])
-            (let ([cmd (car cmds)])
-              (define txt (any-tree-text cmd))
-              (cond [(string=? txt "skip")
-                     (loop (cdr cmds) #t more? emit-type next-mode next-mstack next-pending)]
+(define (gen-command-body commands token-expr raw-name)
+  (define inner-body
+    (if (null? commands)
+        (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) ~a ~a ~a)" token-expr "mode" "mstack" "pending")
+        (let loop ([cmds commands]
+                   [skip? #f]
+                   [more? #f]
+                   [emit-type token-expr]
+                   [next-mode "mode"]
+                   [next-mstack "mstack"]
+                   [next-pending "pending"])
+          (if (null? cmds)
+              (cond [skip? (format "(loop np l c o tks ~a ~a ~a)" next-mode next-mstack next-pending)]
+                    [more? (format "(loop np l c o tks ~a ~a ~a)" next-mode next-mstack next-pending)]
+                    [else (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) ~a ~a ~a)"
+                                  emit-type next-mode next-mstack next-pending)])
+              (let ([cmd (car cmds)])
+                (define txt (any-tree-text cmd))
+                (cond [(string=? txt "skip")
+                       (loop (cdr cmds) #t more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "pushMode(")
-                     (define mname (substring txt 9 (sub1 (string-length txt))))
+                     (define raw-mname (substring txt 9 (sub1 (string-length txt))))
+                     (define mname (if (string=? raw-mname "DEFAULT_MODE") "default" raw-mname))
                      (loop (cdr cmds) skip? more? emit-type (format "'~a" mname) (format "(cons mode ~a)" next-mstack) next-pending)]
-                    [(string=? txt "popMode")
-                     (loop (cdr cmds) skip? more? emit-type
-                           "(if (null? mstack) 'default (car mstack))"
-                           "(if (null? mstack) '() (cdr mstack))"
-                           next-pending)]
-                    [(string=? txt "more")
-                     (loop (cdr cmds) skip? #t emit-type next-mode next-mstack
-                           "(if pending (string-append pending v) v)")]
-                    [(string-prefix? txt "type(")
-                     (define tname (substring txt 5 (sub1 (string-length txt))))
-                     (define texpr
-                       (if (regexp-match? #rx"^[a-zA-Z_][a-zA-Z0-9_]*$" tname)
-                           (format "'~a" tname)
-                           (format "(string->symbol ~s)" tname)))
-                     (loop (cdr cmds) skip? more? texpr next-mode next-mstack next-pending)]
-                    [else (loop (cdr cmds) skip? more? emit-type next-mode next-mstack next-pending)]))))))
+                      [(string=? txt "popMode")
+                       (loop (cdr cmds) skip? more? emit-type
+                             "(if (null? mstack) 'default (car mstack))"
+                             "(if (null? mstack) '() (cdr mstack))"
+                             next-pending)]
+                      [(string=? txt "more")
+                       (loop (cdr cmds) skip? #t emit-type next-mode next-mstack
+                             "(if pending (string-append pending v) v)")]
+                      [(string-prefix? txt "type(")
+                       (define tname (substring txt 5 (sub1 (string-length txt))))
+                       (define texpr
+                         (if (regexp-match? #rx"^[a-zA-Z_][a-zA-Z0-9_]*$" tname)
+                             (format "'~a" tname)
+                             (format "(string->symbol ~s)" tname)))
+                       (loop (cdr cmds) skip? more? texpr next-mode next-mstack next-pending)]
+                      [else (loop (cdr cmds) skip? more? emit-type next-mode next-mstack next-pending)]))))))
+  ;; Template depth/brace tracking for specific rules
+  (cond [(string=? raw-name "BackTick")
+         (string-append "(set-box! template-depth (+ (unbox template-depth) 1)) " inner-body)]
+        [(string=? raw-name "BackTickInside")
+         (string-append "(set-box! template-depth (- (unbox template-depth) 1)) " inner-body)]
+         [(string=? raw-name "TemplateStringStartExpression")
+          (string-append "(set-box! brace-depth 1) " inner-body)]
+        [(string=? raw-name "OpenBrace")
+         (string-append "(when (> (unbox template-depth) 0) (set-box! brace-depth (+ (unbox brace-depth) 1))) " inner-body)]
+        [(string=? raw-name "CloseBrace")
+         ;; Conditional popMode: if template-depth > 0 and brace-depth reaches 0, pop back to TEMPLATE
+         (string-append
+          "(let ([new-bd (if (> (unbox template-depth) 0)"
+          "                  (- (unbox brace-depth) 1)"
+          "                  (unbox brace-depth))])"
+          "  (set-box! brace-depth new-bd)"
+          "  (if (and (> (unbox template-depth) 0) (= new-bd 0))"
+          "      (let ([next-mode (if (null? mstack) 'default (car mstack))]"
+          "            [next-mstack (if (null? mstack) '() (cdr mstack))])"
+          "        (define sl (string-length v))"
+          "        (define tk (token " token-expr " v (pos l c o) (pos l (+ c sl) (+ o sl))))"
+          "        (loop np l (+ c sl) (+ o sl) (cons tk tks) next-mode next-mstack pending))"
+          "      (let ()"
+          "        (define sl (string-length v))"
+          "        (define tk (token " token-expr " v (pos l c o) (pos l (+ c sl) (+ o sl))))"
+          "        (loop np l (+ c sl) (+ o sl) (cons tk tks) mode mstack pending))))")]
+        [(string=? raw-name "TemplateCloseBrace")
+         (string-append
+          "(let ([new-bd (if (> (unbox template-depth) 0)"
+          "                  (- (unbox brace-depth) 1)"
+          "                  (unbox brace-depth))])"
+          "  (set-box! brace-depth new-bd)"
+          "  (if (and (> (unbox template-depth) 0) (= new-bd 0))"
+          "      (let ([next-mode (if (null? mstack) 'default (car mstack))]"
+          "            [next-mstack (if (null? mstack) '() (cdr mstack))])"
+          "        (define sl (string-length v))"
+          "        (define tk (token " token-expr " v (pos l c o) (pos l (+ c sl) (+ o sl))))"
+          "        (loop np l (+ c sl) (+ o sl) (cons tk tks) next-mode next-mstack pending))"
+          "      (let ()"
+          "        (define sl (string-length v))"
+          "        (define tk (token " token-expr " v (pos l c o) (pos l (+ c sl) (+ o sl))))"
+          "        (loop np l (+ c sl) (+ o sl) (cons tk tks) mode mstack pending))))")]
+        [else inner-body]))
 (define (gen-parser-helpers)
   "
 (define (ctok tks pos)

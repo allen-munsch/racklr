@@ -528,7 +528,7 @@
                         (define grp (find-kid a 'group))
                         (define se (and grp (first (cst-kids grp))))
                         (if se
-                            (uir-call (uir-symbol "spread") (list (lower-single-expression se tk-type tk-value)))
+                            (uir-spread (lower-single-expression se tk-type tk-value))
                             (uir-null))]
                        [else
                         (define grp (first (cst-kids a)))
@@ -589,8 +589,7 @@
        (define spread-se (find-kid k (quote singleExpression)))
        (when spread-se
          (set! entries (cons (cons (uir-string "...")
-                                   (uir-call (uir-symbol "spread")
-                                             (list (lower-single-expression spread-se tk-type tk-value))))
+                                   (uir-spread (lower-single-expression spread-se tk-type tk-value)))
                              entries)))]
       [is-computed
        ;; pname = propertyName wrapping '[' singleExpression ']'
@@ -658,8 +657,7 @@
            ;; Spread element: ...expr
            (define se (find-kid k (quote singleExpression)))
            (when se
-             (set! items (cons (uir-call (uir-symbol "spread")
-                                         (list (lower-single-expression se tk-type tk-value)))
+             (set! items (cons (uir-spread (lower-single-expression se tk-type tk-value))
                                items)))]
           [else
            (define se (find-kid k (quote singleExpression)))
@@ -699,12 +697,10 @@
     (when se
       (let ([ident (find-kid se (quote identifier))])
         (if ident
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (uir-symbol (tk-value (first (kids-of ident))))))
-                               params))
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (lower-single-expression se tk-type tk-value)))
-                               params))))))
+            (set! params (cons (uir-spread (uir-symbol (tk-value (first (kids-of ident)))))
+                              params))
+            (set! params (cons (uir-spread (lower-single-expression se tk-type tk-value))
+                              params))))))
   (when params-node
     (define fpl (find-kid params-node (quote formalParameterList)))
     (when fpl
@@ -755,12 +751,10 @@
     (when se
       (let ([ident (find-kid se (quote identifier))])
         (if ident
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (uir-symbol (tk-value (first (kids-of ident))))))
-                               params))
-            (set! params (cons (uir-call (uir-symbol "rest")
-                                         (list (lower-single-expression se tk-type tk-value)))
-                               params))))))
+            (set! params (cons (uir-spread (uir-symbol (tk-value (first (kids-of ident)))))
+                              params))
+            (set! params (cons (uir-spread (lower-single-expression se tk-type tk-value))
+                              params))))))
   (define fpl (find-kid node (quote formalParameterList)))
   (when fpl
     (let loop ([ks (kids-of fpl)])

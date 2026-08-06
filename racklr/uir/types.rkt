@@ -68,7 +68,9 @@
  uir-style uir-style? uir-style-styles
  uir-effect uir-effect? uir-effect-deps uir-effect-body
  uir-state uir-state? uir-state-name uir-state-init
- uir-jsx-expr uir-jsx-expr? uir-jsx-expr-content)
+  uir-jsx-expr uir-jsx-expr? uir-jsx-expr-content
+  ;; Spread operator (...expr)
+  uir-spread uir-spread? uir-spread-expr)
 
 ;; ── Tier 0: Core Computational IR ──────────────────────────────────
 
@@ -205,3 +207,6 @@
 (struct uir-state (name init) #:transparent)
 ;; JSX embedded expression
 (struct uir-jsx-expr (content) #:transparent)
+
+;; Spread operator (...expr)
+(struct uir-spread (expr) #:transparent)

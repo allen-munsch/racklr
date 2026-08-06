@@ -61,6 +61,7 @@
       (uir-effect? v)
       (uir-state? v)
       (uir-jsx-expr? v)
+      (uir-spread? v)
       (uir-match? v)
       (uir-case? v)
       (uir-pat-literal? v)
@@ -124,6 +125,7 @@
         [(uir-effect? v)     'effect]
         [(uir-state? v)      'state]
         [(uir-jsx-expr? v)  'jsx-expr]
+        [(uir-spread? v)    'spread]
         [(uir-match? v)          'match]
         [(uir-case? v)           'case]
         [(uir-pat-literal? v)    'pat-literal]
@@ -262,6 +264,7 @@
         [(uir-state? v) `(state ,(uir->sexp (uir-state-name v))
                                 ,(uir->sexp (uir-state-init v)))]
         [(uir-jsx-expr? v) `(jsx-expr ,(uir-jsx-expr-content v))]
+        [(uir-spread? v) `(spread ,(uir->sexp (uir-spread-expr v)))]
         [else (error 'uir->sexp "not a UIR node: ~e" v)]))
 
 (define (sexp->uir s)
@@ -357,6 +360,7 @@
     [`(effect ,ds ,body) (uir-effect (map sexp->uir ds) (sexp->uir body))]
     [`(state ,n ,init) (uir-state (sexp->uir n) (sexp->uir init))]
      [`(jsx-expr ,content) (uir-jsx-expr content)]
+    [`(spread ,expr) (uir-spread (sexp->uir expr))]
      [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
 
 (require json)
@@ -368,9 +372,9 @@
         [else s]))
 
 (define uir-tag-set (set 'null 'bool 'number 'string 'fstring 'list 'record 'symbol
-                          'fn 'call 'let 'var 'set! 'if 'block 'return 'for-each 'try 'with 'await 'yield 'decorated 'get 'paren
+                          'fn 'call 'let 'var 'set! 'ann-set! 'if 'block 'return 'for-each 'while 'try 'with 'await 'yield 'decorated 'get 'paren
                           'class 'method 'field 'new 'interface 'module 'import 'export 'enum 'enum-variant
-                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr
+                          'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr 'spread
                           'match 'case 'pat-literal 'pat-capture 'pat-wildcard 'pat-value 'pat-or 'pat-as
                           'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group))
 

@@ -43,6 +43,7 @@
         [(uir-string? v) (write-json-string (uir-string-value v) out)]
         [(uir-list? v) (emit-list (uir-list-items v) out level width)]
         [(uir-record? v) (emit-record (uir-record-entries v) out level width)]
+        [(uir-spread? v) (display "..." out) (emit-node (uir-spread-expr v) out level width)]
         [else (error 'emit-json "unexpected uir node: ~e" v)]))
 
 (define (emit-list items out level width)

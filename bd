@@ -1,83 +1,155 @@
 # racklr issue tracker
 
-## Done
+## Active
+
+### B56 — TS type/interface member separator required by grammar (not optional)
+- **Status:** Done. Added `insert-type-separators` to `preprocess-imports` step in hooks.rkt. Scans for `type X = {` and `interface X {` blocks, inserts `;` at end of non-empty member lines lacking a `,`, `;`, `{`, or `}` terminator. Blog-starter `[slug].tsx` type blocks now parse correctly.
+- **Files:** `racklr/lower-tsx/hooks.rkt`, `.gitignore`
+
+### B57 — Conditional JSX expressions inside `{...}` not lowered
+- **Status:** Open. JSX inside conditional expressions like `{heroPost && (<HeroPost ... />)}` is not extracted/lowered by preprocess-tsx. The JSX stays raw in the output. The `{cond && <JSX/>}` pattern appears in blog-starter's `pages/index.tsx`.
+- **Impact:** Conditional rendering in JSX produces raw JSX strings in emitted output instead of createElement calls.
+- **Test app:** `test-apps/blog-starter/pages/index.tsx` line 26.
+
+### B58 — next/router `useRouter` not handled
+- **Status:** Open. The `useRouter` hook from `next/router` is not recognized by the hook lowering system. The blog-starter [slug].tsx uses `router.isFallback` and `useRouter()`.
+- **Impact:** Dynamic route pages using `useRouter` will produce undefined `router` at runtime.
+- **Fix:** Add `useRouter` to `known-externals` pattern in hook-lower, or provide a shim that returns `{ isFallback: false, pathname: window.location.hash }`.
+
+### B59 — `next/error` ErrorPage not stubbed
+- **Status:** Open. `import ErrorPage from 'next/error'` is not recognized as a known external and not stubbed. The blog-starter [slug].tsx uses `<ErrorPage statusCode={404} />`.
+- **Fix:** Add `next/error` to known externals in esbuild-resolve.rkt, and add a lower-jsx pattern for `ErrorPage` tag → `<div>404</div>`.
+
+### B60 — `next/head` Head component emits as raw `<head>` element
+- **Status:** Open. `import Head from 'next/head'` is in known-externals (stripped), and the JSX lowering maps `<Head>` to `head`. But the content inside `<Head>` (like `<title>`) doesn't get injected into the HTML `<head>` — it gets appended to the DOM body instead.
+- **Impact:** `<Head><title>My Title</title></Head>` renders the title in the body, not the document head.
+- **Fix:** In emit-router.rkt, detect Head content and inject into HTML template `<head>` at build time.
+
+### B61 — Node.js builtins (`fs`, `path`, `process`) used in lib/api.ts
+- **Status:** Open. Blog-starter's `lib/api.ts` uses `fs.readdirSync`, `path.join`, `process.cwd()` to read markdown files. These are Node.js APIs, not available in the browser, and not handled by the pipeline.
+- **Impact:** `getStaticProps` / `getStaticPaths` functions that read the filesystem can't be evaluated by the Racket pipeline.
+- **Fix:** Evaluate `getStaticProps` at build time in Racket (using Racket's `file` and `path` libraries), or extract data from markdown files directly during the build step.
+
+## Archive
+
+<details>
+<summary>B1-B55 (completed before 2026-07-10)</summary>
+
+### B55 — Template literal ${expr} grammar gap
+- **Status:** Done.
+
+### B54 — Object spread ...x lowered as function call
+- **Status:** Done.
+
+### B53 — Optional chaining ?. lowered as function call
+- **Status:** Done.
+
+### B52 — Destructured function params dropped during lowering
+- **Status:** Done.
+
+### B51 — Object shorthand in JSX expressions lowered as empty record
+- **Status:** Done.
+
+### B50 — `export default function` loses body in lowering
+- **Status:** Done.
+
+### B49 — TS features: satisfies, as const, template literal types
+- **Status:** Done.
+
+### B48 — Synthetic event system
+- **Status:** Done.
+
+### B47 — React API: forwardRef, memo, Suspense, lazy, createPortal
+- **Status:** Done.
+
+### B46 — CSS module `composes` / `@value` / advanced features
+- **Status:** Done.
+
+### B45 — useEffect dependency array semantics
+- **Status:** Done.
+
+### B44 — Provider stack for context
+- **Status:** Done.
+
+### B43 — Third-party import resolution (node_modules)
+- **Status:** Done.
+
+### B42 — TS lexer: identifiers ending in digits split
+- **Status:** Done.
+
+### B41 — TS lowerer object destructuring
+- **Status:** Done.
+
+### B40 — TS lowerer array destructuring
+- **Status:** Done.
+
+### B39 — TypeScript generics / type parameters
+- **Status:** Done.
+
+### B38 — `lower-typescript.rkt` split
+- **Status:** Done.
+
+### B37 — esbuild dependency removal
+- **Status:** Done.
+
+### B36 — TS parser bug: `func(arrow, [array])` fails
+- **Status:** Done.
+
+### B35 — Remove regex hooks, use parser-based UIR transforms
+- **Status:** Done.
+
+### B34 — `next/image` and `next/head` stubs
+- **Status:** Done.
+
+### B33 — Dynamic routes (`[slug].tsx`)
+- **Status:** Done.
+
+### B32 — React.Fragment (`<></>`) support
+- **Status:** Done.
+
+### B31 — `children` prop from JSX nesting
+- **Status:** Done.
+
+### B30 — CSS module class name generation
+- **Status:** Done.
+
+### B29 — No re-render on state change
+- **Status:** Done.
+
+### B28 — CSS modules / styled-jsx baseline
+- **Status:** Done.
+
+### B27 — `getStaticProps` computed values
+- **Status:** Done.
+
+### B26 — `getServerSideProps` data extraction
+- **Status:** Done.
+
+### B25 — `Link` component / client-side navigation
+- **Status:** Done.
+
+### B24 — `useReducer`
+- **Status:** Done.
+
+### B23 — `useContext`
+- **Status:** Done.
+
+### B22 — `useCallback` and `useMemo`
+- **Status:** Done.
+
+### B21 — `useRef`
+- **Status:** Done.
+
+### B20 — `useEffect` cleanup function
+- **Status:** Done.
 
 ### B19 — Shared layout wrapper
-- **Status:** Done. `#:layout` option accepts TSX source for a shared layout component. Layout receives page props merged with `{ children: pageElement }`. `_mount` wraps each page through the layout via `Object.assign`.
-- **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
 ### B18 — Pages directory discovery
-- **Status:** Done. `discover-pages` function scans a directory for `*.tsx` files, maps `index.tsx` to `/` and `name.tsx` to `/name`. Ignores dotfiles and non-.tsx files. Returns a hash suitable for `emit-pages-html`.
-- **Files:** `racklr/emit-router.rkt` (`discover-pages`), `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
-### B17 — `getStaticProps` data inlining (STATIC PROPS)
-- **Status:** Done. `extract-static-props` uses brace-counting to pull the props object literal from `return { props: { ... } }` in emitted JS before the function is stripped. Props are injected as `_pageData` in the router, passed to `pageFn(pageData)`, and merged with layout children via `Object.assign`.
-- **Files:** `racklr/emit-router.rkt` (`extract-static-props`, updated `page->js` and router template), `racklr-test/tsx-integration-test.rkt`
+### B17 — getStaticProps data inlining at build time
+- **Status:** Done.
 
-### B16 — uir-test ordering bug
-- **Status:** Done. The failure was in `esbuild-integration-test.rkt`, not `uir-test.rkt`. The test tried to parse esbuild-bundled JSX+IIFE output through the TS parser, which crashed because IIFE-wrapped JSX isn't valid TS source. Removed the pipeline-from-bundled-output tests; multi-file resolution is covered by `tsx-integration-test.rkt` (B6).
-- **Files:** `racklr-test/esbuild-integration-test.rkt`
-
-### B15 — SSR / data fetching
-- **Status:** Done. `getStaticProps` and `getServerSideProps` (including `async` variants) are stripped from page output via regex in `emit-router.rkt`.
-- **Files:** `racklr/emit-router.rkt` (`page->js`), `racklr-test/tsx-integration-test.rkt` (B15 tests)
-- **Details:** Regex `(?m:^(export )?(async )?function (getStaticProps|getServerSideProps)\([^)]*\) \{.*\};?\n?)` strips entire function definition after emit.
-
-### B14 — Routing (pages/ convention)
-
-### B13 — Style objects
-- **Status:** Done. `style={{color: "red"}}` lowered to `Object.assign(_el.style, {color: "red"})`.
-- **File:** `racklr/emit-dom-javascript.rkt`
-
-### B12 — Conditional rendering
-- **Status:** Done. `{cond && <div/>}` and `{cond ? <A/> : <B/>}` lowered via post-lowering pass in `tsx-preprocess.rkt`, emitted as bare ternary in `.appendChild()`.
-- **Files:** `racklr/tsx-preprocess.rkt` (`process-jsx-expr-conditionals`), `racklr/emit-javascript.rkt` (uir-if exemption in JSX child path)
-- **Tests:** `racklr-test/tsx-integration-test.rkt` (B12a, B12b)
-
-### B7 — Component calls vs HTML elements
-- **Status:** Done. Lowercase tag names → `uir-element` + DOM emission. Uppercase → `uir-call` invoking the function.
-- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
-
-### B8 — Props as function arguments
-- **Status:** Done. Component calls collect attributes into object literal argument. HTML elements keep `setAttribute`.
-- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
-
-### B9 — Expression children in JSX
-- **Status:** Done. Non-string expression children wrapped in `document.createTextNode(...)`.
-- **File:** `racklr/emit-dom-javascript.rkt`
-
-### B10 — Hooks (useState, useEffect)
-- **Status:** Done. `useState` → closure-based state, `useEffect` → DOM mount callback.
-- **File:** `racklr/lower-hooks.rkt`
-
-### B11 — Event handlers
-- **Status:** Done. `onClick`/`onChange` lowered to `_el.addEventListener("...", handler)`.
-- **File:** `racklr/lower-hooks.rkt`, `racklr/emit-dom-javascript.rkt`
-
-### B6 — Multi-file/module support
-- **Status:** Done. Uses esbuild for import resolution + type-stripping (JSX preserved), racklr handles parse→lower→emit.
-- **File:** `racklr/esbuild-resolve.rkt` (new)
-- **Tests:** `racklr-test/tsx-integration-test.rkt` (+3 multi-file tests, 11 total)
-- **Interface:** `(resolve-imports files #:entry "app.tsx")` → bundled source string
-- **Details:** Shells out to `npx esbuild --bundle --jsx=preserve --format=esm`, strips comments (ANTLR4's `channel(HIDDEN)` not implemented in racklr), returns merged source with JSX intact. Wired into pipeline via `tsx-app->js`.
-
-### B1 — `let`/`const` lowered to `var` in TypeScript
-- **File:** `racklr/lower-typescript.rkt:105`
-- **Fix:** Changed `(define vm (find-kid vdl 'varModifier))` to `(define vm (find-kid node 'varModifier))`
-
-### B2 — Member expression (6+ kids) lowered to null
-- **File:** `racklr/lower-typescript.rkt:494`
-- **Fix:** Changed `(= (length kids) 5)` to `(>= (length kids) 5)`, added infix detection for 2-kid case with proper discriminator, added TS call path for singleExpression-wrapped calls
-
-### B3 — Arrow functions lowered as regular `function() {}`
-- **File:** `racklr/lower-typescript.rkt:783-788`
-- **Fix:** `lower-arrow-fn` now finds `arrowFunctionDeclaration` child, searches within that for `arrowFunctionParameters`. Fixed param list handling for TS grouped parameters.
-
-### B4 — Test expects `void` for void return type
-- **File:** `racklr-test/lower-typescript-test.rkt:67`
-- **Fix:** Changed check from `"void"` to `"log"` (function name preserved, return type correctly stripped)
-
-### B5 — HTML emitter
-- **File:** `racklr/emit-html.rkt` (new)
-- **Tests:** `racklr-test/emit-html-test.rkt` (new, 12 tests)
-- **Interface:** `(emit-html uir #:title "App")` → HTML5 document with embedded JS
+</details>
