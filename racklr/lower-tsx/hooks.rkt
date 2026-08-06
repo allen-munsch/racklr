@@ -5,6 +5,60 @@
 
 (provide preprocess-hooks preprocess-imports)
 
+;; ── Brace-matching helper (needed by insert-type-separators) ─────────
+
+(define (find-matching-brace s open-pos)
+  (define len (string-length s))
+  (unless (and (< open-pos len) (char=? (string-ref s open-pos) #\{))
+    (error 'find-matching-brace "expected { at ~a" open-pos))
+  (let loop ([pos (+ open-pos 1)] [depth 1])
+    (cond [(= depth 0) (- pos 1)]
+          [(>= pos len) #f]
+          [(or (char=? (string-ref s pos) #\')
+               (char=? (string-ref s pos) #\"))
+           (loop (advance-past-string s pos (string-ref s pos)) depth)]
+          [(char=? (string-ref s pos) #\{) (loop (+ pos 1) (+ depth 1))]
+          [(char=? (string-ref s pos) #\}) (loop (+ pos 1) (- depth 1))]
+          [else (loop (+ pos 1) depth)])))
+
+;; ── B56: Insert ; between type/interface members separated by newlines ─
+
+(define (insert-type-separators source)
+  ;; Scan for `type X = {` or `interface X ... {` blocks, and within each,
+  ;; add `;` at end of member lines that lack a separator.
+  (define rx-type-start #px"(?:type|interface)\\s+\\w+\\s*(?:[^{]*?)\\s*\\{")
+  (let loop ([s source] [start 0])
+    (define m (regexp-match-positions rx-type-start s start (string-length s)))
+    (if (not m)
+        s
+        (let* ([match-end (cdar m)]
+               [brace-pos (- match-end 1)]  ;; position of the {
+               [after-brace (substring s brace-pos)]
+               [close-pos (find-matching-brace after-brace 0)])
+          (if (not close-pos)
+              ;; Unmatched brace — skip past the { and continue
+              (loop s (+ brace-pos 1))
+              (let* ([block-content (substring after-brace 1 close-pos)]
+                     [fixed-block (fix-type-member-lines block-content)]
+                     [before (substring s 0 brace-pos)]
+                     [close-abs (+ brace-pos close-pos)]
+                     [after (substring s (add1 close-abs))])
+                (define new-s (string-append before "{" fixed-block "}" after))
+                ;; Continue scanning from after the closing }
+                (loop new-s (+ (string-length before) 1 (string-length fixed-block) 1))))))))
+
+(define (fix-type-member-lines block-str)
+  ;; For each line in the block: if it's non-empty and doesn't end with
+  ;; {, }, ,, or ;, add ; at the end (B56).
+  (define lines (string-split block-str "\n"))
+  (string-join
+   (for/list ([line (in-list lines)])
+     (define trimmed (string-trim line))
+     (cond [(equal? trimmed "") line]
+           [(regexp-match #rx"[{},;]\\s*$" trimmed) line]
+           [else (string-append line ";")]))
+   "\n"))
+
 ;; ── Import stripping (regex — keeps source valid for TS parser) ─────
 
 (define (preprocess-imports source)
@@ -19,7 +73,11 @@
 
   ;; Step 1.5: Remove CSS module imports (B28)
   (define rx-css-module #px"import[[:space:]]+[[:word:]]+[[:space:]]+from[[:space:]]+[\"'][^\"']*\\.module\\.css[\"'][[:space:]]*;?[[:space:]]*\n?")
-  (regexp-replace* rx-css-module s2 ""))
+  (define s3 (regexp-replace* rx-css-module s2 ""))
+
+  ;; Step 1.6: Insert ; between type members separated only by newlines (B56)
+  ;; The ANTLR grammar requires ; or , separators. Standard TS allows newlines.
+  (insert-type-separators s3))
 
 ;; ── Identifier scanning helpers ─────────────────────────────────────
 
@@ -59,22 +117,6 @@
            (loop (advance-past-string s pos (string-ref s pos)) depth)]
           [(char=? (string-ref s pos) #\() (loop (+ pos 1) (+ depth 1))]
           [(char=? (string-ref s pos) #\)) (loop (+ pos 1) (- depth 1))]
-          [else (loop (+ pos 1) depth)])))
-
-;; Find matching close-brace for open-brace at open-pos.
-;; Returns position of matching close-brace, or #f.
-(define (find-matching-brace s open-pos)
-  (define len (string-length s))
-  (unless (and (< open-pos len) (char=? (string-ref s open-pos) #\{))
-    (error 'find-matching-brace "expected { at ~a" open-pos))
-  (let loop ([pos (+ open-pos 1)] [depth 1])
-    (cond [(= depth 0) (- pos 1)]
-          [(>= pos len) #f]
-          [(or (char=? (string-ref s pos) #\')
-               (char=? (string-ref s pos) #\"))
-           (loop (advance-past-string s pos (string-ref s pos)) depth)]
-          [(char=? (string-ref s pos) #\{) (loop (+ pos 1) (+ depth 1))]
-          [(char=? (string-ref s pos) #\}) (loop (+ pos 1) (- depth 1))]
           [else (loop (+ pos 1) depth)])))
 
 ;; Extract N comma-separated arguments from inside parens.

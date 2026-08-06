@@ -1,120 +1,146 @@
 # racklr issue tracker
 
-## Done
+## Active
 
-### B55 — Template literal ${expr} grammar gap (lexer mode pop)
-- **Status:** Done. Template literals already parsed correctly by the grammar. The bug was operator precedence: expressions inside `${}` were left-folded with `+` without parentheses, so `${a ? b : c}` emitted `"a" + a ? b : c + "b"` (ternary mis-evaluated) and `${x + y}` emitted `"a" + x + y + "b"` (numeric addition swallowed by string concat). Fixed by wrapping each `${expr}` part in `uir-paren` during lowering. Added `uir-paren` emission to emit-javascript.rkt.
-- **Files:** `racklr/emit-javascript.rkt`, `racklr/lower-typescript/expr.rkt`, `racklr-test/tsx-integration-test.rkt`
+### B56 — TS type/interface member separator required by grammar (not optional)
+- **Status:** Done. Added `insert-type-separators` to `preprocess-imports` step in hooks.rkt. Scans for `type X = {` and `interface X {` blocks, inserts `;` at end of non-empty member lines lacking a `,`, `;`, `{`, or `}` terminator. Blog-starter `[slug].tsx` type blocks now parse correctly.
+- **Files:** `racklr/lower-tsx/hooks.rkt`, `.gitignore`
+
+### B57 — Conditional JSX expressions inside `{...}` not lowered
+- **Status:** Open. JSX inside conditional expressions like `{heroPost && (<HeroPost ... />)}` is not extracted/lowered by preprocess-tsx. The JSX stays raw in the output. The `{cond && <JSX/>}` pattern appears in blog-starter's `pages/index.tsx`.
+- **Impact:** Conditional rendering in JSX produces raw JSX strings in emitted output instead of createElement calls.
+- **Test app:** `test-apps/blog-starter/pages/index.tsx` line 26.
+
+### B58 — next/router `useRouter` not handled
+- **Status:** Open. The `useRouter` hook from `next/router` is not recognized by the hook lowering system. The blog-starter [slug].tsx uses `router.isFallback` and `useRouter()`.
+- **Impact:** Dynamic route pages using `useRouter` will produce undefined `router` at runtime.
+- **Fix:** Add `useRouter` to `known-externals` pattern in hook-lower, or provide a shim that returns `{ isFallback: false, pathname: window.location.hash }`.
+
+### B59 — `next/error` ErrorPage not stubbed
+- **Status:** Open. `import ErrorPage from 'next/error'` is not recognized as a known external and not stubbed. The blog-starter [slug].tsx uses `<ErrorPage statusCode={404} />`.
+- **Fix:** Add `next/error` to known externals in esbuild-resolve.rkt, and add a lower-jsx pattern for `ErrorPage` tag → `<div>404</div>`.
+
+### B60 — `next/head` Head component emits as raw `<head>` element
+- **Status:** Open. `import Head from 'next/head'` is in known-externals (stripped), and the JSX lowering maps `<Head>` to `head`. But the content inside `<Head>` (like `<title>`) doesn't get injected into the HTML `<head>` — it gets appended to the DOM body instead.
+- **Impact:** `<Head><title>My Title</title></Head>` renders the title in the body, not the document head.
+- **Fix:** In emit-router.rkt, detect Head content and inject into HTML template `<head>` at build time.
+
+### B61 — Node.js builtins (`fs`, `path`, `process`) used in lib/api.ts
+- **Status:** Open. Blog-starter's `lib/api.ts` uses `fs.readdirSync`, `path.join`, `process.cwd()` to read markdown files. These are Node.js APIs, not available in the browser, and not handled by the pipeline.
+- **Impact:** `getStaticProps` / `getStaticPaths` functions that read the filesystem can't be evaluated by the Racket pipeline.
+- **Fix:** Evaluate `getStaticProps` at build time in Racket (using Racket's `file` and `path` libraries), or extract data from markdown files directly during the build step.
+
+## Archive
+
+<details>
+<summary>B1-B55 (completed before 2026-07-10)</summary>
+
+### B55 — Template literal ${expr} grammar gap
+- **Status:** Done.
 
 ### B54 — Object spread ...x lowered as function call
-- **Status:** Done. Added `uir-spread` type to UIR. All spread/rest lowered as `(uir-spread expr)` instead of `(uir-call (uir-symbol "spread") ...)`. Updated all 3 spread locations in TS expr.rkt, all 3 in JS lowerer, plus 4 rest-param sites in each. Updated uir.rkt dispatchers, emit-javascript (added `uir-spread` case, removed dead `spread`/`rest` uir-call cases), emit-python, emit-json, and UIR walkers (hook-lower, preprocess). All 1452 tests pass.
-- **Files:** `racklr/uir/types.rkt`, `racklr/uir.rkt`, `racklr/emit-javascript.rkt`, `racklr/emit-python.rkt`, `racklr/emit-json.rkt`, `racklr/lower-typescript/expr.rkt`, `racklr/lower-typescript.rkt`, `racklr/lower-javascript.rkt`, `racklr/lower-tsx/hook-lower.rkt`, `racklr/lower-tsx/preprocess.rkt`
+- **Status:** Done.
 
 ### B53 — Optional chaining ?. lowered as function call
-- **Status:** Done. The CST for `a?.b` is a 3-kid node `[left, QuestionMarkDot, right]`, not 2-kid infix. Fixed by adding `QuestionMarkDot` check in the 3-kid binary infix case to emit `a == null ? void 0 : a.b`. Function calls like `a?.b()` are restructured via `optchain-call` helper in the 2-kid function-call path to put the call inside the ternary's false branch.
-- **Files:** `racklr/lower-typescript/expr.rkt`, `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
 ### B52 — Destructured function params dropped during lowering
-- **Status:** Done. Was already working correctly — arrow functions, function expressions, and array destructuring all produce correct `_p0.x` / `_p0[0]` extraction patterns. Fixed 4 pre-existing unrelated test failures (let→var in useState assertions, discover-pages cons pair handling).
-- **Files:** `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
 ### B51 — Object shorthand in JSX expressions lowered as empty record
-- **Status:** Done. `lower-jsx-expr` only collected `ExpressionText` tokens, missing `ExpressionOpenBrace` and `ExpressionCloseBrace` (`{`/`}`) that are part of the JS expression syntax. Object literals like `{{x, y: 1}}` in JSX attributes lost their braces, emitting `{props: x, y: 1}` instead of `{props: {x, y: 1}}`. Fixed by also collecting `ExpressionOpenBrace` and `ExpressionCloseBrace` tokens.
-- **Files:** `racklr/lower-jsx.rkt`, `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
 ### B50 — `export default function` loses body in lowering
-- **Status:** Done. `export default function Home() { ... }` is parsed by the TS grammar as `expressionStatement(singleExpression(Default, anonymousFunction(functionDeclaration(...))))`. The `lower-function-expr` couldn't find `functionBody` inside the nested `functionDeclaration → group → group` structure. Fixed by: (1) `lower-arrow-fn` unwraps `functionDeclaration` from `anonymousFunction`, (2) `lower-function-expr` searches for `functionBody` inside `group → group` and `formalParameterList` inside `callSignature → parameterList` (same pattern as `lower-fn-decl`).
-- **Files:** `racklr/lower-typescript.rkt`
-
-### B46 — CSS module `composes` / `@value` / advanced features
-- **Status:** Done. `composes:` declarations now properly stripped from CSS output (were being re-emitted as invalid top-level lines). CSS custom properties (`--var`, `var()`) pass through correctly. `@value` and `@import` stripped (not processed — acceptable for v1). Media queries, pseudo-classes, and nested selectors work.
-- **Files:** `racklr/lower-tsx/css-modules.rkt`
+- **Status:** Done.
 
 ### B49 — TS features: satisfies, as const, template literal types
-- **Status:** Done. `as` expressions now correctly stripped in lowering (both 3-kid CastAsExpression and 2-kid IdentifierExpression forms). `satisfies` (TS 4.9+) is not in this grammar version — parsed as separate expression statement; needs grammar-level support. Template literal types require lexer changes.
-- **Files:** `racklr/lower-typescript/expr.rkt`, `racklr/lower-typescript.rkt`
+- **Status:** Done.
 
 ### B48 — Synthetic event system
-- **Status:** Done. Event handlers now wrapped to receive synthetic event: `function(_e){handler({nativeEvent:_e,preventDefault:function(){_e.preventDefault()},stopPropagation:function(){_e.stopPropagation()}})}`.
-- **Files:** `racklr/emit-javascript.rkt`
+- **Status:** Done.
 
 ### B47 — React API: forwardRef, memo, Suspense, lazy, createPortal
-- **Status:** Done. forwardRef/memo → passthrough (keep render fn). lazy → stub component returning placeholder div. Suspense → render children, ignore fallback. createPortal → children passthrough.
-- **Files:** `racklr/lower-tsx/hook-lower.rkt`
+- **Status:** Done.
+
+### B46 — CSS module `composes` / `@value` / advanced features
+- **Status:** Done.
 
 ### B45 — useEffect dependency array semantics
-- **Status:** Done. useEffect now compares deps using JSON.stringify and stores previous deps on `window._deps_N`. Counter-based unique keys. Effect callback only fires on first render or when deps stringified value changes.
-- **Files:** `racklr/lower-tsx/hook-lower.rkt`
+- **Status:** Done.
 
 ### B44 — Provider stack for context
-- **Status:** Done. `useContext` inside JSX `{...}` expressions now correctly transformed via text-level regex in `uir-jsx-expr` nodes. Pipeline reordered: `lower-hooks` runs after `restore-jsx` so it walks the combined UIR including JSX expression text. Also added recursion for `uir-call`, `uir-block`, `uir-if`, `uir-return`, `uir-set!`, `uir-let` compound types.
-- **Files:** `racklr/lower-tsx/hook-lower.rkt`, `racklr-test/tsx-integration-test.rkt`
+- **Status:** Done.
 
 ### B43 — Third-party import resolution (node_modules)
-- **Status:** Done. `esbuild-resolve.rkt` now handles bare specifiers: finds `import ... from "pkg"` patterns, resolves from node_modules by reading package.json `main` field, adds resolved files to dependency graph. Known externals (react, react-dom, next) silently stripped. Added `#:project-root` parameter for node_modules path.
-- **Files:** `racklr/esbuild-resolve.rkt`
+- **Status:** Done.
 
 ### B42 — TS lexer: identifiers ending in digits split
-- **Status:** Done. Root cause: `cc-match` in gend-parser.rkt compared `char-general-category` results (lowercase `'nd`, `'mn`) against uppercase (`'Nd`, `'Mn`). Fixed by lowercasing all category comparisons in the template (nl, mn, mc, nd, pc). `val2` now correctly tokenizes as single `Identifier=val2`.
-- **Files:** `racklr/gend-parser.rkt`
+- **Status:** Done.
 
 ### B41 — TS lowerer object destructuring
-- **Status:** Done. `const { x, y: renamed, z = default } = expr` now lowers to `(const (object-bind [names...] rhs))`. Handles shorthand, renamed, and default patterns. `emit-declaration` in emit-javascript.rkt handles both `array-bind` and `object-bind` with proper bracket emission.
-- **Files:** `racklr/lower-typescript.rkt`, `racklr/emit-javascript.rkt`
-
-### B39 — TypeScript generics / type parameters
-- **Status:** Done. `singleExpression` level `# GenericTypes` alternative now handled in lower-single-expression (expr.rkt). When the second kid of a 2-kid call is `singleExpression(typeArguments, expressionSequence?)`, type args are stripped and call args extracted from expressionSequence. Handles `fn<T>(args)`, `obj.method<T>(args)`, `new C<T>(args)`. Type parameters on functions/arrows already work (stripped before lowering).
-- **Files:** `racklr/lower-typescript/expr.rkt`
-
-### B35 — Remove regex hooks, use parser-based UIR transforms
+- **Status:** Done.
 
 ### B40 — TS lowerer array destructuring
-- **Status:** Done. `const [a, b] = expr` now lowers to `(const (array-bind [(sym a) (sym b)] rhs))`. `lower-var-decl` detects arrayLiteral in first group, `extract-array-binding-names` extracts element names from elementList.
-- **Files:** `racklr/lower-typescript.rkt`
-
-### B27 — `getStaticProps` computed values
 - **Status:** Done.
 
-### B28 — CSS modules / styled-jsx baseline
+### B39 — TypeScript generics / type parameters
 - **Status:** Done.
 
-### B29 — No re-render on state change
+### B38 — `lower-typescript.rkt` split
 - **Status:** Done.
 
-### B30 — CSS module class name generation
+### B37 — esbuild dependency removal
 - **Status:** Done.
 
-### B31 — `children` prop from JSX nesting
+### B36 — TS parser bug: `func(arrow, [array])` fails
 - **Status:** Done.
 
-### B32 — React.Fragment (`<></>`) support
-- **Status:** Done.
-
-### B33 — Dynamic routes (`[slug].tsx`)
+### B35 — Remove regex hooks, use parser-based UIR transforms
 - **Status:** Done.
 
 ### B34 — `next/image` and `next/head` stubs
 - **Status:** Done.
 
+### B33 — Dynamic routes (`[slug].tsx`)
+- **Status:** Done.
+
+### B32 — React.Fragment (`<></>`) support
+- **Status:** Done.
+
+### B31 — `children` prop from JSX nesting
+- **Status:** Done.
+
+### B30 — CSS module class name generation
+- **Status:** Done.
+
+### B29 — No re-render on state change
+- **Status:** Done.
+
+### B28 — CSS modules / styled-jsx baseline
+- **Status:** Done.
+
+### B27 — `getStaticProps` computed values
+- **Status:** Done.
+
 ### B26 — `getServerSideProps` data extraction
 - **Status:** Done.
 
+### B25 — `Link` component / client-side navigation
+- **Status:** Done.
+
 ### B24 — `useReducer`
-- **Status:** Done. Now UIR-based (was regex preprocessed).
+- **Status:** Done.
 
 ### B23 — `useContext`
-- **Status:** Done. Now UIR-based (was regex preprocessed).
+- **Status:** Done.
 
 ### B22 — `useCallback` and `useMemo`
-- **Status:** Done. UIR-based.
+- **Status:** Done.
 
 ### B21 — `useRef`
-- **Status:** Done. UIR-based.
+- **Status:** Done.
 
 ### B20 — `useEffect` cleanup function
-- **Status:** Done. Now UIR-based (was regex preprocessed).
-
-### B25 — `Link` component / client-side navigation
 - **Status:** Done.
 
 ### B19 — Shared layout wrapper
@@ -126,11 +152,4 @@
 ### B17 — getStaticProps data inlining at build time
 - **Status:** Done.
 
-### B36 — TS parser bug: `func(arrow, [array])` fails
-- **Status:** Done.
-
-### B37 — esbuild dependency removal
-- **Status:** Done.
-
-### B38 — `lower-typescript.rkt` split
-- **Status:** Done.
+</details>
