@@ -7,9 +7,8 @@
 - **Files:** `racklr/lower-tsx/hooks.rkt`, `.gitignore`
 
 ### B57 — Conditional JSX expressions inside `{...}` not lowered
-- **Status:** Open. JSX inside conditional expressions like `{heroPost && (<HeroPost ... />)}` is not extracted/lowered by preprocess-tsx. The JSX stays raw in the output. The `{cond && <JSX/>}` pattern appears in blog-starter's `pages/index.tsx`.
-- **Impact:** Conditional rendering in JSX produces raw JSX strings in emitted output instead of createElement calls.
-- **Test app:** `test-apps/blog-starter/pages/index.tsx` line 26.
+- **Status:** Done. Fixed `process-cond-jsx-expr` regexes in conditionals.rkt to use `(?s:)` multiline flag and `\s*` for whitespace. Added `find-jsx-in-text` helper that finds the first `<[a-zA-Z]` in captured text and extracts JSX from there, handling paren-wrapped patterns like `{heroPost && (\n<HeroPost/>\n)}`. Blog-starter index.tsx conditional JSX now lowers correctly.
+- **Files:** `racklr/lower-tsx/conditionals.rkt`, `racklr-test/tsx-integration-test.rkt`
 
 ### B58 — next/router `useRouter` not handled
 - **Status:** Open. The `useRouter` hook from `next/router` is not recognized by the hook lowering system. The blog-starter [slug].tsx uses `router.isFallback` and `useRouter()`.
