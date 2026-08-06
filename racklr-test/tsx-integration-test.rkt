@@ -428,3 +428,34 @@ export default (props) => <p>{props.heading}</p>;"))
 
 (define b55h (tsx->js "const x = `${a && b}`;"))
 (check-true (string-contains? b55h "(a && b)"))
+
+;; ── B57: Conditional JSX in expression text ──────────────────────────
+
+;; Simple single-line && conditional
+(define b57a (tsx->js "const el = <div>{show && <span>hi</span>}</div>;"))
+(check-true (string-contains? b57a "createElement(\"span\""))
+
+;; Multi-line && with paren-wrapped JSX (blog-starter style)
+(define b57b-src "
+const el = (
+  <div>
+    {heroPost && (
+      <HeroPost
+        title=\"hello\"
+      />
+    )}
+  </div>
+);
+")
+(define b57b (tsx->js b57b-src))
+;; HeroPost is uppercase → component call, not createElement
+(check-true (string-contains? b57b "HeroPost({") "HeroPost component in conditional")
+
+;; Ternary: cond ? <A/> : <B/>
+(define b57c (tsx->js "const el = <div>{flag ? <A/> : <B/>}</div>;"))
+(check-true (string-contains? b57c "A({})") "ternary then branch")
+(check-true (string-contains? b57c "B({})") "ternary else branch")
+
+;; Bare JSX in expression
+(define b57d (tsx->js "const el = <div>{<span>hi</span>}</div>;"))
+(check-true (string-contains? b57d "createElement(\"span\"") "bare JSX in expression")

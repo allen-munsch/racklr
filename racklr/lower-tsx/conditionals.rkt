@@ -38,26 +38,34 @@
                node)]
           [else node]))
   
+  (define (find-jsx-in-text text)
+    ;; Find the first < followed by a letter, return substring from there
+    (define trimmed (string-trim text))
+    (define m (regexp-match-positions #rx"<[a-zA-Z]" trimmed))
+    (and m (substring trimmed (caar m))))
+
   (define (process-cond-jsx-expr expr)
-    (define m-and (regexp-match #rx"^(.+?) *&& *(<[a-zA-Z].+)$" expr))
-    (define m-tern (regexp-match #rx"^(.+?) *[?] *(<[a-zA-Z].+) *: *(<[a-zA-Z].+)$" expr))
-    (define m-inline (regexp-match #rx"^ *(<[a-zA-Z].+) *$" expr))
+    (define trimmed (string-trim expr))
+    ;; B57: use (?s:) to match across newlines, \s* for whitespace,
+    ;; capture rest after && / ? / : then extract JSX from it.
+    (define m-and (regexp-match #rx"(?s:^(.+?)\\s*&&\\s*(.+)$)" trimmed))
+    (define m-tern (regexp-match #rx"(?s:^(.+?)\\s*[?]\\s*(.+)\\s*:\\s*(.+)$)" trimmed))
+    (define m-inline (regexp-match #rx"(?s:^\\s*(<[a-zA-Z].+)\\s*$)" trimmed))
     (cond [m-and
-           (define cond-expr (uir-jsx-expr (string-trim (cadr m-and))))
-           (define jsx-lowered (lower-jsx-text (caddr m-and)))
-           (if jsx-lowered
-               (uir-if cond-expr jsx-lowered (uir-null))
-               #f)]
+           (let* ([cond-expr (uir-jsx-expr (string-trim (cadr m-and)))]
+                  [jsx-text (find-jsx-in-text (caddr m-and))]
+                  [jsx-lowered (and jsx-text (lower-jsx-text jsx-text))])
+             (and jsx-lowered (uir-if cond-expr jsx-lowered (uir-null))))]
           [m-tern
-           (define cond-expr (uir-jsx-expr (string-trim (cadr m-tern))))
-           (define then-lowered (lower-jsx-text (string-trim (caddr m-tern))))
-           (define else-lowered (lower-jsx-text (string-trim (cadddr m-tern))))
-           (if (and then-lowered else-lowered)
-               (uir-if cond-expr then-lowered else-lowered)
-               #f)]
+           (let* ([cond-expr (uir-jsx-expr (string-trim (cadr m-tern)))]
+                  [then-text (find-jsx-in-text (caddr m-tern))]
+                  [else-text (find-jsx-in-text (cadddr m-tern))]
+                  [then-lowered (and then-text (lower-jsx-text then-text))]
+                  [else-lowered (and else-text (lower-jsx-text else-text))])
+             (and then-lowered else-lowered
+                  (uir-if cond-expr then-lowered else-lowered)))]
           [m-inline
-           (define jsx-lowered (lower-jsx-text (cadr m-inline)))
-           (or jsx-lowered #f)]
+           (lower-jsx-text (cadr m-inline))]
           [else #f]))
   
   (walk uir))
