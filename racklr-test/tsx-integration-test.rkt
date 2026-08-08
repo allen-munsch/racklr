@@ -459,3 +459,136 @@ const el = (
 ;; Bare JSX in expression
 (define b57d (tsx->js "const el = <div>{<span>hi</span>}</div>;"))
 (check-true (string-contains? b57d "createElement(\"span\"") "bare JSX in expression")
+
+;; ── B58: useRouter shim ──────────────────────────────────────────────
+
+;; Basic useRouter() call → shim object with isFallback, pathname, query
+(define b58a (tsx->js "const router = useRouter();"))
+(check-true (string-contains? b58a "isFallback") "useRouter: isFallback shim")
+(check-true (string-contains? b58a "false") "useRouter: isFallback = false")
+(check-true (string-contains? b58a "window.location.pathname") "useRouter: pathname shim")
+(check-true (string-contains? b58a "query") "useRouter: query shim")
+
+;; useRouter with property access
+(define b58b (tsx->js "const router = useRouter(); const x = router.isFallback;"))
+(check-true (string-contains? b58b "isFallback") "useRouter: prop access")
+
+;; useRouter inside a component
+(define b58c-src "
+const App = () => {
+  const router = useRouter();
+  return <div class={router.isFallback ? 'loading' : 'ready'}>hi</div>;
+};
+")
+(define b58c (tsx->js b58c-src))
+(check-true (string-contains? b58c "isFallback") "useRouter: in component")
+(check-true (string-contains? b58c "window.location.pathname")
+            "useRouter: pathname in component")
+
+;; ── B59: next/error ErrorPage stub ────────────────────────────────────
+
+;; Basic ErrorPage → div with status code text
+(define b59a (tsx->js "const page = <ErrorPage statusCode={404} />;"))
+(check-true (string-contains? b59a "Error 404") "ErrorPage: shows status code")
+
+;; ErrorPage with inline expression statusCode
+(define b59b (tsx->js "const page = <ErrorPage statusCode={500} />;"))
+(check-true (string-contains? b59b "Error 500") "ErrorPage: status 500")
+
+;; ErrorPage import is stripped (next is in known-externals)
+(define b59c (tsx->js "import ErrorPage from 'next/error'; const page = <ErrorPage statusCode={404} />;"))
+(check-true (string-contains? b59c "Error 404") "ErrorPage: works with import")
+
+;; ── B60: next/head Head content injection into HTML <head> ──────────
+
+;; Head with title should inject into HTML <head>, not just body JS
+(define b60a-pages
+  (hash "/" "import Head from 'next/head';
+export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</p></div>);"))
+(define b60a-html (emit-pages b60a-pages #:title "Default Title"))
+(check-true (string-contains? b60a-html "My Custom Title") "B60: title in HTML")
+;; Verify title is NOT emitted as DOM JS (no document.createElement in body)
+(check-false (string-contains? b60a-html "createElement(\"title\"") "B60: title not in body JS")
+;; The body should still have the Hello paragraph
+(check-true (string-contains? b60a-html "createTextNode(\"Hello\")") "B60: body content preserved")
+
+;; Head with meta tags
+(define b60b-pages
+  (hash "/" (string-append
+             "import Head from 'next/head';"
+             "export default () => (<div><Head><meta name=\"description\" content=\"My desc\" /></Head><p>Hi</p></div>);")))
+(define b60b-html (emit-pages b60b-pages #:title "B60b"))
+(check-true (string-contains? b60b-html "description") "B60: meta tag in HTML")
+
+;; ── B61: Node.js builtins evaluated via node at build time ──────────
+
+;; getStaticProps using process.cwd() — evaluated via node
+(define b61a-pages
+  (hash "/" (string-append
+             "export function getStaticProps() {"
+             "  return { props: { cwd: process.cwd() } };"
+             "}"
+             "export default (props) => <p>{props.cwd}</p>;")))
+(define b61a-html (emit-pages b61a-pages #:title "B61"))
+(check-true (string-contains? b61a-html (path->string (current-directory)))
+            "B61: process.cwd() evaluated via node")
+
+;; getStaticProps returns data inlined as _pageData
+(check-true (string-contains? b61a-html "_pageData")
+            "B61: _pageData present")
+
+;; fs.readdirSync with literal path
+(let ()
+  (define test-dir (build-path (current-directory) "racklr-test" "b61-tmp"))
+  (make-directory* test-dir)
+  (with-output-to-file (build-path test-dir "a.md") #:exists 'replace
+    (lambda () (display "# A\n")))
+  (with-output-to-file (build-path test-dir "b.md") #:exists 'replace
+    (lambda () (display "# B\n")))
+  (define b61b-pages
+    (hash "/" (string-append
+               "export function getStaticProps() {"
+               "  return { props: { filenames: fs.readdirSync('racklr-test/b61-tmp') } };"
+               "}"
+               "export default (props) => <p>{props.filenames.length}</p>;")))
+  (define b61b-html (emit-pages b61b-pages #:title "B61b"))
+  (check-true (string-contains? b61b-html "a.md") "B61: fs.readdirSync finds a.md")
+  (check-true (string-contains? b61b-html "b.md") "B61: fs.readdirSync finds b.md")
+  (delete-directory/files test-dir))
+
+;; fs.readFileSync with frontmatter parsing (b61c)
+(let ()
+  (define test-dir (build-path (current-directory) "racklr-test" "b61-tmp"))
+  (make-directory* test-dir)
+  (with-output-to-file (build-path test-dir "post.md") #:exists 'replace
+    (lambda ()
+      (display "---\n")
+      (display "title: \"Hello World\"\n")
+      (display "date: \"2024-01-01\"\n")
+      (display "---\n")
+      (display "# Post Content\n")))
+  (define b61c-pages
+    (hash "/" (string-append
+               "export function getStaticProps() {"
+               "  const data = fs.readFileSync('racklr-test/b61-tmp/post.md', 'utf8');"
+               "  return { props: data };"
+               "}"
+               "export default (props) => <p>{props.title} - {props.date}</p>;")))
+  (define b61c-html (emit-pages b61c-pages #:title "B61c"))
+  (check-true (string-contains? b61c-html "Hello World") "B61c: fs.readFileSync frontmatter title")
+  (check-true (string-contains? b61c-html "2024-01-01") "B61c: fs.readFileSync frontmatter date")
+  (delete-directory/files test-dir))
+
+;; getStaticPaths — literal paths (b61d)
+(define b61d-pages
+  (hash "/:slug" (string-append
+                  "export function getStaticPaths() {"
+                  "  return {"
+                  "    paths: [{ params: { slug: 'hello' } }, { params: { slug: 'world' } }],"
+                  "    fallback: false"
+                  "  };"
+                  "}"
+                  "export default (props) => <p>slug: {props.slug}</p>;")))
+(define b61d-html (emit-pages b61d-pages #:title "B61d"))
+(check-true (string-contains? b61d-html "hello") "B61d: getStaticPaths generates hello page")
+(check-true (string-contains? b61d-html "world") "B61d: getStaticPaths generates world page")

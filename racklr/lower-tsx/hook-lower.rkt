@@ -204,9 +204,28 @@
                                                      (uir-symbol "push")))
                                      (list (uir-symbol "_fx")))))
                          (uir-null))))
-               (uir-null))))]
+                (uir-null))))]
 
-    ;; ── const ctx = createContext(default) → const ctx = { _default: default, _provider: [] }
+     ;; ── const router = useRouter() → shim object ─────────────────────
+     [(uir-call (uir-symbol "const")
+                (list (uir-set! (? uir-symbol? name-uir)
+                                (uir-call (uir-var (uir-symbol "useRouter"))
+                                          '()))))
+      (uir-call (uir-symbol "const")
+                (list (uir-set! name-uir
+                                (uir-record
+                                 (list
+                                  (cons (uir-string "isFallback") (uir-bool #f))
+                                  (cons (uir-string "pathname")
+                                        (uir-call (uir-symbol "dot")
+                                                  (list (uir-call (uir-symbol "dot")
+                                                                  (list (uir-symbol "window")
+                                                                        (uir-symbol "location")))
+                                                        (uir-symbol "pathname"))))
+                                  (cons (uir-string "query")
+                                        (uir-record '())))))))]
+
+     ;; ── const ctx = createContext(default) → const ctx = { _default: default, _provider: [] }
     [(uir-call (uir-symbol "const")
                (list (uir-set! (? uir-symbol? name-uir)
                                (uir-call (uir-var (uir-symbol "createContext"))
