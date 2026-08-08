@@ -2,6 +2,7 @@
 
 (require racket/string
          racket/file
+         racklr/eval-gsp-node
          racklr/esbuild-resolve
          racklr/tsx-preprocess
          racklr/emit-javascript
@@ -356,10 +357,20 @@
        (struct-copy uir-paren p [inner (strip-head-elements (uir-paren-inner p))])]
       [_ node]))
 
-  (define (page->js source #:css-mapping [css-mapping #f])
+  (define (page->js source #:css-mapping [css-mapping #f]
+                     #:project-root [project-root #f]
+                     #:original-source [original-source #f])
     (define clean-src (preprocess-imports source))
+    ;; B62: Strip relative data imports when Node eval handles data-fetching.
+    ;; The original-source is the pre-resolve-imports source with intact imports.
+    (define import-src (or original-source clean-src))
+    (define clean-src2
+      (if (and project-root (has-cross-file-imports? import-src))
+          (regexp-replace* #px"import\\s+[^;]*from\\s+['\"]\\.{1,2}[^'\"]+['\"]\\s*;?\\s*\n?"
+                           clean-src "")
+          clean-src))
     (define-values (processed jsx-map jsx-uir)
-      (preprocess-tsx clean-src
+      (preprocess-tsx clean-src2
                       #:jsx-parse jsx-parse
                       #:jsx-lower-tk-type jsx-tok-type
                       #:jsx-lower-tk-value jsx-tok-value))
@@ -378,7 +389,12 @@
                              (string-append "\"" hashed "\"")))
           full-js))
     ;; Extract getStaticProps data before stripping (B17)
-    (define static-props (extract-static-props css-replaced))
+    ;; B62: If source has cross-file imports, try Node evaluation first
+    (define static-props
+      (if (and project-root (has-cross-file-imports? import-src))
+          (or (eval-gsp-via-node import-src project-root)
+              (extract-static-props css-replaced))
+          (extract-static-props css-replaced)))
     ;; Extract getServerSideProps data (B26) — dynamic, server-side only placeholder
     (define server-props (extract-server-props css-replaced))
     ;; Strip data-fetching functions (getStaticProps, getServerSideProps)
@@ -431,7 +447,8 @@
            #:all-files [all-files #f]
            #:path-to-entry [path-to-entry (lambda (p) p)]
            #:layout [layout #f]
-           #:css-modules [css-modules (hash)])
+           #:css-modules [css-modules (hash)]
+           #:project-root [project-root #f])
     ;; pages: hash of URL-path (string) → source (string)
     ;;   Each source is a page component.
     ;;   If #:all-files is provided: hash of filename → source for the full project.
@@ -486,8 +503,10 @@
            (match (hash-ref css-module-data path #f)
              [(list _ mapping) mapping]
              [#f #f]))
-         (define-values (page-js static-props server-props head-html)
-           (page->js resolved #:css-mapping css-mapping))
+          (define-values (page-js static-props server-props head-html)
+            (page->js resolved #:css-mapping css-mapping
+                      #:project-root project-root
+                      #:original-source src))
          (define (make-entry p rp)
            (list p page-js static-props server-props rp head-html))
          (if static-paths

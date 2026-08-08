@@ -23,8 +23,8 @@
 - **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt`
 
 ### B61 — Node.js builtins (`fs`, `path`, `process`) used in lib/api.ts
-- **Status:** Partially Complete. `eval-gsp-polyfill` in `emit-router.rkt` handles: `process.cwd()` → Racket current-directory, `fs.readdirSync("dir")` → directory-list, `path.join(process.cwd(), "dir")` → build-path, `fs.readFileSync(path, 'utf8')` → frontmatter parsing, `getStaticPaths` literal path expansion. Returns JSON string injected into `_pageData`. Remaining: cross-file import resolution for data functions (lib/api.ts helpers).
-- **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt` (+ tests b61a/b61b/b61c/b61d, 1487 total)
+- **Status:** Done. `eval-gsp-polyfill` in `emit-router.rkt` handles: `process.cwd()` → Racket current-directory, `fs.readdirSync("dir")` → directory-list, `path.join(process.cwd(), "dir")` → build-path, `fs.readFileSync(path, 'utf8')` → frontmatter parsing, `getStaticPaths` literal path expansion. Returns JSON string injected into `_pageData`. Cross-file import resolution (B62) for `lib/api.ts` helpers is done via `eval-gsp-node.rkt` shelling out to Node with `--experimental-strip-types`. Requires `"type":"module"` in project `package.json`.
+- **Files:** `racklr/emit-router.rkt`, `racklr/eval-gsp-node.rkt`, `racklr-test/tsx-integration-test.rkt` (+ tests b61a/b61b/b61c/b61d/b62, 1489 total)
 
 ## Archive
 

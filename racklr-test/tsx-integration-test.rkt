@@ -1,6 +1,7 @@
 #lang racket
 
 (require racket/string
+         racket/file
          rackunit
          racklr/tree
          racklr/uir
@@ -592,3 +593,34 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
 (define b61d-html (emit-pages b61d-pages #:title "B61d"))
 (check-true (string-contains? b61d-html "hello") "B61d: getStaticPaths generates hello page")
 (check-true (string-contains? b61d-html "world") "B61d: getStaticPaths generates world page")
+
+;; ── B62: Cross-file import evaluation via Node.js ─────────────────────
+;; getStaticProps that imports a helper function from another file.
+;; Uses Node --experimental-strip-types to evaluate the chain.
+(let ([test-dir "/tmp/b62-tmp"])
+  (when (directory-exists? test-dir)
+    (delete-directory/files test-dir))
+  (make-directory test-dir)
+  (make-directory (build-path test-dir "lib"))
+  ;; package.json: required for Node to treat .ts files as ES modules
+  (with-output-to-file (build-path test-dir "package.json") #:exists 'replace
+    (lambda () (display "{\"type\":\"module\"}")))
+  ;; lib/data.ts: helper that returns blog post data
+  (with-output-to-file (build-path test-dir "lib" "data.ts") #:exists 'replace
+    (lambda ()
+      (display "export function getItems() { return [{title:'B62 Title',slug:'b62-slug'}]; }")))
+  ;; page.ts: imports getItems from ./lib/data, uses in getStaticProps
+  (with-output-to-file (build-path test-dir "page.ts") #:exists 'replace
+    (lambda ()
+      (display "import { getItems } from './lib/data';\n")
+      (display "export const getStaticProps = () => {\n")
+      (display "  const items = getItems();\n")
+      (display "  return { props: { items } };\n")
+      (display "};\n")
+      (display "export default () => null;\n")))
+  (define b62-src (file->string (build-path test-dir "page.ts")))
+  (define b62-html
+    (emit-pages (hash "/" b62-src) #:title "B62" #:project-root test-dir))
+  (check-true (string-contains? b62-html "B62 Title") "B62: cross-file Node eval embeds imported data")
+  (check-true (string-contains? b62-html "b62-slug") "B62: cross-file Node eval embeds slug")
+  (delete-directory/files test-dir))
