@@ -7,6 +7,7 @@
          racklr/emit-javascript
          racklr/lower-jsx
          racklr/lower-tsx/css-modules
+         racklr/uir
          (prefix-in ts-lower: racklr/lower-typescript))
 
 (provide emit-pages-html
@@ -45,6 +46,7 @@
 
   (define (extract-static-props full-js)
     ;; Find the full getStaticProps function body and wrap as IIFE.
+    ;; B61: If the function references Node.js APIs, evaluate via node at build time.
     (define rx-gsp #rx"function getStaticProps")
     (define m (regexp-match-positions rx-gsp full-js))
     (and m
@@ -58,7 +60,14 @@
                 (let loop ([pos body-start] [depth 1])
                   (cond [(= depth 0)
                          (define body (substring full-js body-start (- pos 1)))
-                         (string-append "(function() {" body "})().props")]
+                         ;; Check if body uses Node.js APIs (B61)
+                          (define uses-node?
+                            (or (regexp-match? #rx"fs\\." body)
+                                (regexp-match? #rx"path\\." body)
+                                (regexp-match? #rx"process\\." body)))
+                          (if uses-node?
+                              (eval-gsp-polyfill body)
+                             (string-append "(function() {" body "})().props"))]
                         [(>= pos (string-length full-js)) #f]
                         [(char=? (string-ref full-js pos) #\{) (loop (+ pos 1) (+ depth 1))]
                         [(char=? (string-ref full-js pos) #\}) (loop (+ pos 1) (- depth 1))]
@@ -67,6 +76,285 @@
                          (let ([end (advance-past-string full-js pos (string-ref full-js pos))])
                            (loop end depth))]
                         [else (loop (+ pos 1) depth)]))))))
+
+  ;; B61: Racket polyfill for Node.js APIs in getStaticProps/getStaticPaths.
+  ;; Handles: process.cwd(), fs.readdirSync(literal), path.join(process.cwd(), literal)
+  ;; Returns a JSON string for the props value, or #f if no polyfill applies.
+  (define (eval-gsp-polyfill body)
+    (define escaped-quote
+      (lambda (s) (regexp-replace* #rx"\"" s "\\\\\"")))
+
+    (define (parse-frontmatter contents)
+      (define lines (string-split contents "\n"))
+      (if (and (pair? lines) (string=? (car lines) "---"))
+          (let loop ([rest (cdr lines)] [pairs '()])
+            (cond [(null? rest) #f]
+                  [(string=? (car rest) "---")
+                   (reverse pairs)]
+                  [else
+                   (define kv (regexp-match #rx"^([a-zA-Z_][a-zA-Z0-9_]*):[ \t]*(.+)$" (car rest)))
+                   (if kv
+                       (let ([value (caddr kv)]
+                             [len (string-length (caddr kv))])
+                         (loop (cdr rest)
+                               (cons (cons (cadr kv)
+                                           (if (and (> len 1)
+                                                    (char=? (string-ref value 0) #\")
+                                                    (char=? (string-ref value (- len 1)) #\"))
+                                               (substring value 1 (- len 1))
+                                               value))
+                                     pairs)))
+                       (loop (cdr rest) pairs))]))
+          #f))
+
+    ;; Resolve path.join(process.cwd(), "dir") → racket path
+    (define (resolve-join-dir body)
+      (define join-m (regexp-match #rx"path\\.join\\(process\\.cwd\\(\\),[ \n]*\"([^\"]+)\"\\)" body))
+      (and join-m
+           (build-path (current-directory) (cadr join-m))))
+    
+    ;; Resolve fs.readdirSync("dir") → list of filenames
+    (define (resolve-readdir body #:base-dir [base-dir (current-directory)])
+      (define readdir-m (regexp-match #rx"fs\\.readdirSync\\([ \n]*\"([^\"]+)\"[ \n]*\\)" body))
+      (and readdir-m
+           (let ([dir (build-path base-dir (cadr readdir-m))])
+             (and (directory-exists? dir)
+                  (sort (map path->string (directory-list dir)) string<?)))))
+    
+    ;; Resolve process.cwd()
+    (define cwd-str (path->string (current-directory)))
+    
+    ;; Build JSON props from detected patterns
+    (define entries '())
+    
+    ;; Check for path.join + fs.readdirSync combo
+    (define joined-dir (resolve-join-dir body))
+    (define readdir-result
+      (resolve-readdir body #:base-dir (or joined-dir (current-directory))))
+    
+    (when readdir-result
+      (set! entries
+            (cons (format "\"filenames\":[~a]"
+                          (string-join
+                           (map (lambda (f)
+                                  (string-append "\"" (escaped-quote f) "\""))
+                                readdir-result)
+                           ","))
+                  entries)))
+    
+    ;; Check for fs.readdirSync (already handled above via readdir-result)
+    
+    ;; Check for fs.readFileSync(path, 'utf8') with literal path
+    (define readfile-m (regexp-match #rx"fs\\.readFileSync\\([ \n]*['\"]([^'\"]+)['\"][ \n]*,[ \n]*['\"]utf-?8['\"][ \n]*\\)" body))
+    (when readfile-m
+      (let ([fpath (build-path (or joined-dir (current-directory)) (cadr readfile-m))])
+        (when (file-exists? fpath)
+          (define contents (file->string fpath))
+          (define fm (parse-frontmatter contents))
+          (when (and fm (pair? fm))
+            (set! entries
+                  (cons (string-join
+                         (map (lambda (kv)
+                                (format "\"~a\":\"~a\""
+                                        (car kv)
+                                        (escaped-quote (cdr kv))))
+                              fm)
+                         ",")
+                        entries))))))
+    
+    ;; Check for process.cwd() directly
+    (when (regexp-match? #rx"process\\.cwd\\(\\)" body)
+      (set! entries
+            (cons (format "\"cwd\":\"~a\"" (escaped-quote cwd-str))
+                  entries)))
+    
+    (if (null? entries)
+        #f
+        (string-append "{" (string-join (reverse entries) ",") "}")))
+
+  ;; ── getStaticPaths extraction (B61) ──────────────────────────────
+  ;; Returns list of param hashes for each path, or #f.
+  (define (extract-static-paths full-js)
+    (define rx-gsp #rx"function getStaticPaths")
+    (define m (regexp-match-positions rx-gsp full-js))
+    (and m
+         (let* ([fn-pos (cdar m)]
+                [body-start (let loop ([pos fn-pos])
+                              (and (< pos (string-length full-js))
+                                   (if (char=? (string-ref full-js pos) #\{)
+                                       (+ pos 1)
+                                       (loop (+ pos 1)))))])
+           (and body-start
+                (let loop ([pos body-start] [depth 1])
+                  (cond [(= depth 0)
+                         (extract-paths-from-body (substring full-js body-start (- pos 1)))]
+                        [(>= pos (string-length full-js)) #f]
+                        [(char=? (string-ref full-js pos) #\{) (loop (+ pos 1) (+ depth 1))]
+                        [(char=? (string-ref full-js pos) #\}) (loop (+ pos 1) (- depth 1))]
+                        [(or (char=? (string-ref full-js pos) #\")
+                             (char=? (string-ref full-js pos) #\'))
+                         (let ([end (advance-past-string full-js pos (string-ref full-js pos))])
+                           (loop end depth))]
+                        [else (loop (+ pos 1) depth)]))))))
+
+  (define (extract-paths-from-body body)
+    (define paths-result '())
+    (define rx-params #rx"params:[ \n]*\\{([^}]+)\\}")
+    (define rx-kv #rx"([a-zA-Z_][a-zA-Z0-9_]*):[ \n]*['\"]([^'\"]+)['\"]")
+    (let loop ([pos 0])
+      (define m (regexp-match-positions rx-params body pos))
+      (if m
+          (let ([params-body (substring body (caar m) (cdar m))])
+            (define param-hash (make-hash))
+            (let kv-loop ([kpos 0])
+              (define km (regexp-match-positions rx-kv params-body kpos))
+              (if (and km (pair? (cdr km)) (pair? (cddr km)))
+                  (let* ([key-start (caadr km)] [key-end (cdadr km)]
+                         [val-start (caaddr km)] [val-end (cdaddr km)]
+                         [key-str (substring params-body key-start key-end)]
+                         [val-str (substring params-body val-start val-end)])
+                    (hash-set! param-hash (string->symbol key-str) val-str)
+                    (kv-loop (cdaddr km)))
+                  (void)))
+            (when (positive? (hash-count param-hash))
+              (set! paths-result (cons param-hash paths-result)))
+            (loop (cdar m)))
+          (void)))
+    (if (null? paths-result) #f (reverse paths-result)))
+
+  ;; ── Head extraction (B60) ──────────────────────────────────────────
+  ;; Walk UIR, collect <head> element children, emit as HTML for injection
+  ;; into the HTML template <head> section.
+
+  (define (s-u-v x)
+    (cond [(uir-string? x) (uir-string-value x)]
+          [(string? x) x]
+          [else ""]))
+
+  (define (emit-head-attr-value-html v)
+    (match v
+      [(uir-string s) s]
+      [(? string? s) s]
+      [(uir-number n) n]
+      [_ ""]))
+
+  (define (emit-head-node-html node)
+    (match node
+      [(? uir-element? e)
+       (define tag (match (uir-element-tag e)
+                     [(uir-string s) s]
+                     [(? string? s) s]))
+       (define attrs-str
+         (string-join
+          (for/list ([attr (uir-element-attrs e)])
+            (match attr
+              [(uir-attribute name value)
+               (format " ~a=\"~a\""
+                       (match name
+                         [(uir-symbol s) (symbol->string s)]
+                         [(? symbol? s) (symbol->string s)])
+                       (emit-head-attr-value-html value))]
+              [_ ""]))
+          ""))
+       (define children-str
+         (string-join (map emit-head-node-html (uir-element-children e)) ""))
+       (if (string=? children-str "")
+           (format "<~a~a>" tag attrs-str)
+           (format "<~a~a>~a</~a>" tag attrs-str children-str tag))]
+      [(? uir-text-node? n)
+       (match (uir-text-node-content n)
+         [(uir-string s) s]
+         [(? string? s) s])]
+      [(? uir-jsx-expr? _) ""]
+      [_ ""]))
+
+  (define (flatten-uir node)
+    (cons node
+          (append
+           (match node
+             [(? uir-element? e)
+              (append (append-map flatten-uir (uir-element-children e))
+                      (append-map flatten-uir (uir-element-attrs e)))]
+             [(? uir-call? c)
+              (append (flatten-uir (uir-call-callee c))
+                      (append-map flatten-uir (uir-call-args c)))]
+             [(? uir-block? b) (append-map flatten-uir (uir-block-stmts b))]
+             [(? uir-set!? s) (flatten-uir (uir-set!-value s))]
+             [(? uir-let? l) (append (flatten-uir (uir-let-value l))
+                                     (flatten-uir (uir-let-body l)))]
+             [(? uir-if? i) (append (flatten-uir (uir-if-test i))
+                                    (flatten-uir (uir-if-then i))
+                                    (flatten-uir (uir-if-else i)))]
+             [(? uir-return? r) (flatten-uir (uir-return-value r))]
+             [(? uir-fn? f) (flatten-uir (uir-fn-body f))]
+             [(? uir-list? l) (append-map flatten-uir (uir-list-items l))]
+             [(? uir-record? r) (append-map (lambda (p) (flatten-uir (cdr p)))
+                                            (uir-record-entries r))]
+             [(? uir-get? g) (flatten-uir (uir-get-base g))]
+             [(? uir-spread? s) (flatten-uir (uir-spread-expr s))]
+             [(? uir-paren? p) (flatten-uir (uir-paren-inner p))]
+             [(? uir-jsx-expr? _) '()]
+             [_ '()]))))
+
+  (define (collect-head-html uir)
+    (define all-nodes (flatten-uir uir))
+    (define head-children
+      (append-map (lambda (n)
+                    (if (and (uir-element? n)
+                             (uir-string? (uir-element-tag n))
+                             (string=? (uir-string-value (uir-element-tag n)) "head"))
+                        (uir-element-children n)
+                        '()))
+                  all-nodes))
+    (if (null? head-children)
+        ""
+        (string-join (map emit-head-node-html head-children) "\n  ")))
+
+  ;; Walk UIR and remove <head> elements from body (B60)
+  (define (strip-head-elements node)
+    (match node
+      [(? uir-element? e)
+       (define tag (uir-element-tag e))
+       (if (and (uir-string? tag) (string=? (uir-string-value tag) "head"))
+           (uir-null)
+           (struct-copy uir-element e
+                        [children (map strip-head-elements (uir-element-children e))]))]
+      [(? uir-call? c)
+       (struct-copy uir-call c
+                    [callee (strip-head-elements (uir-call-callee c))]
+                    [args (map strip-head-elements (uir-call-args c))])]
+      [(? uir-block? b)
+       (struct-copy uir-block b
+                    [stmts (map strip-head-elements (uir-block-stmts b))])]
+      [(? uir-set!? s)
+       (struct-copy uir-set! s [value (strip-head-elements (uir-set!-value s))])]
+      [(? uir-let? l)
+       (struct-copy uir-let l
+                    [value (strip-head-elements (uir-let-value l))]
+                    [body (strip-head-elements (uir-let-body l))])]
+      [(? uir-if? i)
+       (struct-copy uir-if i
+                    [test (strip-head-elements (uir-if-test i))]
+                    [then (strip-head-elements (uir-if-then i))]
+                    [else (strip-head-elements (uir-if-else i))])]
+      [(? uir-return? r)
+       (struct-copy uir-return r [value (strip-head-elements (uir-return-value r))])]
+      [(? uir-fn? f)
+       (struct-copy uir-fn f [body (strip-head-elements (uir-fn-body f))])]
+      [(? uir-list? l)
+       (struct-copy uir-list l [items (map strip-head-elements (uir-list-items l))])]
+      [(? uir-record? r)
+       (struct-copy uir-record r
+                    [entries (map (lambda (p) (cons (car p)
+                                                    (strip-head-elements (cdr p))))
+                                  (uir-record-entries r))])]
+      [(? uir-get? g)
+       (struct-copy uir-get g [base (strip-head-elements (uir-get-base g))])]
+      [(? uir-spread? s)
+       (struct-copy uir-spread s [expr (strip-head-elements (uir-spread-expr s))])]
+      [(? uir-paren? p)
+       (struct-copy uir-paren p [inner (strip-head-elements (uir-paren-inner p))])]
+      [_ node]))
 
   (define (page->js source #:css-mapping [css-mapping #f])
     (define clean-src (preprocess-imports source))
@@ -79,7 +367,9 @@
     (define ts-uir (ts-lower:lower-program ts-cst ts-tok-type ts-tok-value))
     (define hooks-lowered (lower-hooks ts-uir))
     (define uir (restore-jsx hooks-lowered jsx-uir))
-    (define full-js (emit-javascript uir))
+    (define head-html (collect-head-html uir))
+    (define uir-no-head (strip-head-elements uir))
+    (define full-js (emit-javascript uir-no-head))
     ;; Replace styles.CLASSNAME → "HASHED_CLASSNAME" if css-mapping provided
     (define css-replaced
       (if css-mapping
@@ -93,7 +383,7 @@
     (define server-props (extract-server-props css-replaced))
     ;; Strip data-fetching functions (getStaticProps, getServerSideProps)
     (define (strip-data-functions s)
-      (define rx #rx"(export )?(async )?function (getStaticProps|getServerSideProps)")
+      (define rx #rx"(export )?(async )?function (getStaticProps|getServerSideProps|getStaticPaths)")
       (define m (regexp-match-positions rx s))
       (if m
           (let* ([fn-start (caar m)]
@@ -133,7 +423,8 @@
     ;; Strip trailing semicolons — values used inline in object literal
     (values (string-trim (regexp-replace #rx";\\s*$" no-null ""))
             static-props
-            server-props))
+            server-props
+            head-html))
 
   (lambda (pages
            #:title [title "App"]
@@ -184,17 +475,30 @@
              (string-trim (regexp-replace #rx";\\s*$" no-null "")))))
 
     (define page-entries
-      (for/list ([(path src-cons) (in-hash pages)])
-        (define src (if (pair? src-cons) (car src-cons) src-cons))
-        (define route-params (if (pair? src-cons) (cdr src-cons) #f))
-        (define resolved (resolve-page src path))
-        (define css-mapping
-          (match (hash-ref css-module-data path #f)
-            [(list _ mapping) mapping]
-            [#f #f]))
-        (define-values (page-js static-props server-props)
-          (page->js resolved #:css-mapping css-mapping))
-        (list path page-js static-props server-props route-params)))
+      (append*
+       (for/list ([(path src-cons) (in-hash pages)])
+         (define src (if (pair? src-cons) (car src-cons) src-cons))
+         (define src-route-params (if (pair? src-cons) (cdr src-cons) #f))
+         (define resolved (resolve-page src path))
+         ;; Check for getStaticPaths before processing (B61)
+         (define static-paths (extract-static-paths resolved))
+         (define css-mapping
+           (match (hash-ref css-module-data path #f)
+             [(list _ mapping) mapping]
+             [#f #f]))
+         (define-values (page-js static-props server-props head-html)
+           (page->js resolved #:css-mapping css-mapping))
+         (define (make-entry p rp)
+           (list p page-js static-props server-props rp head-html))
+         (if static-paths
+             ;; Generate one entry per static path, with concrete params
+             (for/list ([params-hash (in-list static-paths)])
+               (define slug-val (hash-ref params-hash 'slug #f))
+               (make-entry (if slug-val
+                               (regexp-replace #rx"/\\:[^/]+" path (string-append "/" slug-val))
+                               path)
+                           params-hash))
+             (list (make-entry path src-route-params))))))
 
     ;; B33: Generate dynamic route pattern matching
     (define dynamic-patterns
@@ -324,6 +628,14 @@
                     (string-titlecase (regexp-replace #rx"^/" path "")))))
        " | "))
 
+    ;; Collect all <Head> content from pages for injection into HTML <head> (B60)
+    (define head-content
+      (string-join
+       (for/list ([entry (in-list page-entries)]
+                  #:unless (string=? (sixth entry) ""))
+         (sixth entry))
+       "\n  "))
+
     ;; Collect hashed CSS for <style> tags
     (define style-tags
       (string-join
@@ -339,6 +651,9 @@
      "  <meta charset=\"UTF-8\">\n"
      "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
      (format "  <title>~a</title>\n" title)
+     (if (string=? head-content "")
+         ""
+         (string-append head-content "\n"))
      (if (positive? (hash-count css-module-data))
          (string-append style-tags "\n")
          "")

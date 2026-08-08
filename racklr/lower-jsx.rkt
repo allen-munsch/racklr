@@ -118,6 +118,8 @@
     (cond [(is-link? tag-str) (uir-string "a")]
           [(eq? tag-sym 'Image) (uir-string "img")]  ;; B34: next/image → <img>
           [(eq? tag-sym 'Head) (uir-string "head")]   ;; B34: next/head → placeholder
+          [(eq? tag-sym 'ErrorPage)                   ;; B59: next/error → error div
+           (uir-string "div")]
           [(and (char-upper-case? (string-ref tag-str 0))
                 (string-suffix? tag-str ".Provider"))
            ;; Provider component: will be handled below, not as a regular component
@@ -138,6 +140,20 @@
     (if (is-link? tag-str)
         (link-attrs->anchor-attrs raw-attrs)
         raw-attrs))
+  
+  ;; B59: ErrorPage → extract statusCode for error text child
+  (define error-children
+    (if (eq? tag-sym 'ErrorPage)
+        (let ([status-code
+               (for/or ([a (in-list attrs)])
+                 (and (uir-attribute? a)
+                      (eq? (uir-symbol-name (uir-attribute-name a)) 'statusCode)
+                      (let ([v (uir-attribute-value a)])
+                        (cond [(uir-number? v) (uir-number-value v)]
+                              [(uir-jsx-expr? v) (uir-jsx-expr-content v)]
+                              [else #f]))))])
+          (list (uir-text-node (format "Error ~a" (if status-code status-code "404")))))
+        #f))
   
   ;; Check if self-closing or with children
   (define maybe-slash (fourth kids))
@@ -186,15 +202,18 @@
         
         [(tok-type-eq maybe-slash tk-type 'JsxOpeningSlashEnd)
          ;; Self-closing: <div/>
-         (uir-element tag-name-uir attrs '() '())]
+         (uir-element tag-name-uir attrs (or error-children '()) '())]
         
-        [(tok-type-eq maybe-slash tk-type 'JsxOpeningEnd)
-         ;; With children (maybe empty)
-         (define children-node (fifth kids))
-         (define children
-           (if (cst-node? children-node)
-               (lower-jsx-children children-node tk-type tk-value)
-               '()))
+         [(tok-type-eq maybe-slash tk-type 'JsxOpeningEnd)
+          ;; With children (maybe empty)
+          (define children-node (fifth kids))
+          (define children
+            (let ([raw (if (cst-node? children-node)
+                           (lower-jsx-children children-node tk-type tk-value)
+                           '())])
+              (if error-children
+                  (append error-children raw)
+                  raw)))
          ;; B31: For components, pass nested JSX children as a 'children' prop
          (define component-attrs
            (if (and (uir-symbol? tag-name-uir) (not (null? children)))
