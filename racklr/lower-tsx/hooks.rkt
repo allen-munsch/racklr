@@ -21,11 +21,11 @@
           [(char=? (string-ref s pos) #\}) (loop (+ pos 1) (- depth 1))]
           [else (loop (+ pos 1) depth)])))
 
-;; ── B56: Insert ; between type/interface members separated by newlines ─
+;; ── B63: Strip ; from type/interface member lines (ANTLR grammar doesn't accept ;) ─
 
-(define (insert-type-separators source)
+(define (strip-type-semicolons source)
   ;; Scan for `type X = {` or `interface X ... {` blocks, and within each,
-  ;; add `;` at end of member lines that lack a separator.
+  ;; strip trailing `;` from member lines.
   (define rx-type-start #px"(?:type|interface)\\s+\\w+\\s*(?:[^{]*?)\\s*\\{")
   (let loop ([s source] [start 0])
     (define m (regexp-match-positions rx-type-start s start (string-length s)))
@@ -39,24 +39,22 @@
               ;; Unmatched brace — skip past the { and continue
               (loop s (+ brace-pos 1))
               (let* ([block-content (substring after-brace 1 close-pos)]
-                     [fixed-block (fix-type-member-lines block-content)]
+                     [fixed-block (strip-semicolons-from-lines block-content)]
                      [before (substring s 0 brace-pos)]
                      [close-abs (+ brace-pos close-pos)]
                      [after (substring s (add1 close-abs))])
                 (define new-s (string-append before "{" fixed-block "}" after))
-                ;; Continue scanning from after the closing }
                 (loop new-s (+ (string-length before) 1 (string-length fixed-block) 1))))))))
 
-(define (fix-type-member-lines block-str)
-  ;; For each line in the block: if it's non-empty and doesn't end with
-  ;; {, }, ,, or ;, add ; at the end (B56).
+(define (strip-semicolons-from-lines block-str)
+  ;; Strip trailing ; from each non-empty line in the block.
   (define lines (string-split block-str "\n"))
   (string-join
    (for/list ([line (in-list lines)])
-     (define trimmed (string-trim line))
-     (cond [(equal? trimmed "") line]
-           [(regexp-match #rx"[{},;]\\s*$" trimmed) line]
-           [else (string-append line ";")]))
+     (cond [(regexp-match #px";\\s*$" (string-trim line))
+            ;; Replace the last ; on the line, preserving indentation and trailing content
+            (regexp-replace #px";(\\s*)$" line "\\1")]
+           [else line]))
    "\n"))
 
 ;; ── Import stripping (regex — keeps source valid for TS parser) ─────
@@ -75,9 +73,12 @@
   (define rx-css-module #px"import[[:space:]]+[[:word:]]+[[:space:]]+from[[:space:]]+[\"'][^\"']*\\.module\\.css[\"'][[:space:]]*;?[[:space:]]*\n?")
   (define s3 (regexp-replace* rx-css-module s2 ""))
 
-  ;; Step 1.6: Insert ; between type members separated only by newlines (B56)
-  ;; The ANTLR grammar requires ; or , separators. Standard TS allows newlines.
-  (insert-type-separators s3))
+  ;; Step 1.6: Normalize double-spaces after { (ANTLR tokenizer quirk: {  → different token)
+  (define s4 (regexp-replace* #px"\\{\\s{2,}" s3 "{ "))
+
+  ;; Step 1.7: Strip ; from type/interface member lines (B63)
+  ;; The ANTLR TS grammar does not accept ; as a type member separator.
+  (strip-type-semicolons s4))
 
 ;; ── Identifier scanning helpers ─────────────────────────────────────
 

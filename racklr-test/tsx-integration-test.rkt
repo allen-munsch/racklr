@@ -624,3 +624,33 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
   (check-true (string-contains? b62-html "B62 Title") "B62: cross-file Node eval embeds imported data")
   (check-true (string-contains? b62-html "b62-slug") "B62: cross-file Node eval embeds slug")
   (delete-directory/files test-dir))
+
+;; ── B63: Semicolons stripped from type/interface member lines ───────
+
+;; B63a: strip ; from type members
+(let ([processed (preprocess-imports
+                  "type Props = {\n  x: string;\n  y: number;\n}")])
+  (check-false (string-contains? processed ";") "B63a: semicolons stripped from type members"))
+
+;; B63b: strip ; from interface members
+(let ([processed (preprocess-imports
+                  "interface I {\n  name: string;\n  age: number;\n}")])
+  (check-false (string-contains? processed ";") "B63b: semicolons stripped from interface members"))
+
+;; B63c: normalize double-space after {
+(let ([processed (preprocess-imports
+                  "type Props = {  x: string; y: number }")])
+  (check-true (string-contains? processed "{ x:") "B63c: normalize double-space after {"))
+
+;; B63d: full pipeline with type having semicolons
+(let ([js (tsx->js
+           "import React from 'react'
+            type Props = {
+              title: string;
+              count: number;
+            }
+            export default function Page(props: Props) {
+              return <div>{props.title}{props.count}</div>
+            }")])
+  (check-true (string-contains? js "function Page") "B63d: type with semicolons lowers correctly")
+  (check-true (string-contains? js "props.title") "B63d: props access works"))
