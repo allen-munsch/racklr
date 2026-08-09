@@ -86,7 +86,7 @@
 
 (define known-externals
   ;; Packages that are handled by the runtime/shim layer — strip imports silently.
-  (set "react" "react-dom" "next" "fs" "path"))
+  (set "react" "react-dom" "next" "fs" "path" "classnames" "date-fns"))
 
 (define (resolve-node-module specifier #:project-root [project-root "."])
   ;; Try to resolve a bare specifier from node_modules.

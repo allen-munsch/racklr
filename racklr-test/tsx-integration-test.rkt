@@ -274,6 +274,22 @@ export { App };"
 (check-true (string-contains? b64a-result "document.createElement(\"main\")")
             "B64a: container wraps content in main")
 
+;; ── B65: npm polyfills ────────────────────────────────────────────
+
+;; B65a: classnames import stripped, polyfill `cn` call preserved
+(let ([js (tsx->js
+           "import cn from 'classnames';
+            export default function Btn() { return cn('base', 'active'); }")])
+  (check-false (string-contains? js "classnames") "B65a: classnames import stripped")
+  (check-true (string-contains? js "cn(") "B65a: cn polyfill call preserved"))
+
+;; B65b: date-fns import stripped, polyfill `format` call preserved
+(let ([js (tsx->js
+           "import { format } from 'date-fns';
+            export default function DateLabel(d: any) { return format(d, 'MMM'); }")])
+  (check-false (string-contains? js "date-fns") "B65b: date-fns import stripped")
+  (check-true (string-contains? js "format(") "B65b: format polyfill call preserved"))
+
 ;; ── B14: Multi-page routing ────────────────────────────────────
 
 (require racklr/emit-router)

@@ -73,8 +73,18 @@
   (define rx-css-module #px"import[[:space:]]+[[:word:]]+[[:space:]]+from[[:space:]]+[\"'][^\"']*\\.module\\.css[\"'][[:space:]]*;?[[:space:]]*\n?")
   (define s3 (regexp-replace* rx-css-module s2 ""))
 
+  ;; Step 1.5b: Remove npm polyfilled imports (B65) — classnames, date-fns
+  (define (strip-npm-import source pkg)
+    (define rx-braces   (pregexp (string-append "import[[:space:]]+\\{[^}]*\\}[[:space:]]+from[[:space:]]+[\"']" pkg "[\"'][[:space:]]*;?[[:space:]]*\n?")))
+    (define rx-combo    (pregexp (string-append "import[[:space:]]+[[:word:]]+[[:space:]]*,[[:space:]]*\\{[^}]*\\}[[:space:]]+from[[:space:]]+[\"']" pkg "[\"'][[:space:]]*;?[[:space:]]*\n?")))
+    (define rx-default  (pregexp (string-append "import[[:space:]]+[[:word:]]+[[:space:]]+from[[:space:]]+[\"']" pkg "[\"'][[:space:]]*;?[[:space:]]*\n?")))
+    (regexp-replace* rx-braces
+      (regexp-replace* rx-combo
+        (regexp-replace* rx-default source "") "") ""))
+  (define s3b (foldl (lambda (pkg src) (strip-npm-import src pkg)) s3 '("classnames" "date-fns")))
+
   ;; Step 1.6: Normalize double-spaces after { (ANTLR tokenizer quirk: {  → different token)
-  (define s4 (regexp-replace* #px"\\{\\s{2,}" s3 "{ "))
+  (define s4 (regexp-replace* #px"\\{\\s{2,}" s3b "{ "))
 
   ;; Step 1.7: Strip ; from type/interface member lines (B63)
   ;; The ANTLR TS grammar does not accept ; as a type member separator.

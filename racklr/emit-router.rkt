@@ -555,8 +555,37 @@
           "          var params = _matchDynamic(path);"))
 
     ;; Assemble router JS
+    (define polyfill-classnames
+      (string-join
+       '("var cn = function() {"
+         "  var classes = [];"
+         "  for (var i = 0; i < arguments.length; i++) {"
+         "    var arg = arguments[i];"
+         "    if (!arg) continue;"
+         "    var argType = typeof arg;"
+         "    if (argType === 'string' || argType === 'number') {"
+         "      classes.push(arg);"
+         "    } else if (Array.isArray(arg)) {"
+         "      classes.push(cn.apply(null, arg));"
+         "    } else if (argType === 'object') {"
+         "      for (var key in arg) {"
+         "        if (Object.prototype.hasOwnProperty.call(arg, key) && arg[key]) {"
+         "          classes.push(key);"
+         "        }"
+         "      }"
+         "    }"
+         "  }"
+         "  return classes.join(' ');"
+         "};")
+       "\n"))
+    (define polyfill-date-fns
+      "var format = function(d, fmt) { return String(d); };")
     (define router-lines
       (list
+       "// B65: npm polyfills"
+       polyfill-classnames
+       polyfill-date-fns
+       ""
        (if layout-fn
            (format "var _layout = ~a;" layout-fn)
            "var _layout = null;")
