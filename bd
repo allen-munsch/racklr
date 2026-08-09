@@ -26,6 +26,30 @@
 - **Status:** Done. `eval-gsp-polyfill` in `emit-router.rkt` handles: `process.cwd()` → Racket current-directory, `fs.readdirSync("dir")` → directory-list, `path.join(process.cwd(), "dir")` → build-path, `fs.readFileSync(path, 'utf8')` → frontmatter parsing, `getStaticPaths` literal path expansion. Returns JSON string injected into `_pageData`. Cross-file import resolution (B62) for `lib/api.ts` helpers is done via `eval-gsp-node.rkt` shelling out to Node with `--experimental-strip-types`. Requires `"type":"module"` in project `package.json`.
 - **Files:** `racklr/emit-router.rkt`, `racklr/eval-gsp-node.rkt`, `racklr-test/tsx-integration-test.rkt` (+ tests b61a/b61b/b61c/b61d/b62, 1489 total)
 
+### B63 — ANTLR TS grammar rejects `;` in type/interface members; double-space after `{` breaks tokenization
+- **Status:** Pending. Type members with semicolons (`type Props = { x: string; }`) fail to parse. The grammar expects bare property declarations terminated by newlines or `,`, not `;`. Also `{  ...}` (double space) creates a different token. B56 added semicolons to members lacking them, which inadvertently broke blog-starter parsing. Fix: strip semicolons from type/interface member lines and normalize double-space after `{` in `preprocess-imports`.
+- **Files:** `racklr/lower-tsx/hooks.rkt` (preprocess-imports), `racklr-test/tsx-integration-test.rkt`
+
+### B64 — Component tree resolution: resolve `../components/*` imports, recursively lower+inline
+- **Status:** Pending. Pages import components (Container, Layout, HeroPost, PostBody, etc.) that are `.tsx` files with their own imports. `esbuild-resolve.rkt` can find these files but fails on npm package paths (`string-append` with a path object). Need: (1) fix npm path resolution, (2) recursively lower each component's JSX/TS, (3) inline the lowered UIR/Javascript into the page's output.
+- **Files:** `racklr/esbuild-resolve.rkt`, `racklr/emit-router.rkt`
+
+### B65 — npm package resolution in components (classnames, date-fns from node_modules)
+- **Status:** Pending. Components import from npm packages (`import cn from 'classnames'`, `import { format } from 'date-fns'`). These need `node_modules` resolution and either: polyfill trivial packages, or include the module in the emitted bundle.
+- **Files:** `racklr/esbuild-resolve.rkt`, `racklr/emit-router.rkt`
+
+### B66 — `_app.tsx` / `_document.tsx` handling
+- **Status:** Pending. Next.js special files serve as the app shell. `_app.tsx` wraps pages with `<Component {...pageProps} />` — needs lowering to a layout template. `_document.tsx` provides the `<Html>`, `<Head>`, `<body>` structure.
+- **Files:** `racklr/emit-router.rkt`
+
+### B67 — npm deps in `lib/api.ts` via Node (gray-matter, remark, remark-html)
+- **Status:** Pending. Blog-starter `lib/api.ts` uses `gray-matter` for frontmatter parsing and `markdownToHtml.ts` uses `remark` + `remark-html` for markdown rendering. These npm packages are installed in `node_modules` but B62's `eval-gsp-node.rkt` doesn't yet resolve them. Fix: ensure `node --experimental-strip-types` can find packages in `node_modules` (requires running from project-root where `node_modules` exists — likely already works, needs verification).
+- **Files:** `racklr/eval-gsp-node.rkt`
+
+### B68 — `next/image` component handling
+- **Status:** Pending. Blog-starter uses `<Image>` from `next/image` in components. Need to lower to `<img>` with appropriate attributes (src, width, height, alt) and handle the `priority` prop.
+- **Files:** `racklr/lower-jsx.rkt`
+
 ## Archive
 
 <details>
