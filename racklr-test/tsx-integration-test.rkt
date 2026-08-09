@@ -254,6 +254,26 @@ export { App };"
 (check-true (string-contains? multi-result "document.createElement(\"button\")"))
 (check-true (string-contains? multi-result "createTextNode(\"Click\")"))
 
+;; ── B64: Nested component resolution ──────────────────────────────
+
+;; B64a: Two-level component tree via resolve-imports
+(define b64a-files
+  (hash "pages/index.tsx"
+        "import Container from \"../components/container\";
+         export default function Page() { return <Container><span>hello</span></Container>; }"
+        "components/container.tsx"
+        "import Header from \"./header\";
+         export default function Container(props: any) { return <div><Header /><main>{props.children}</main></div>; }"
+        "components/header.tsx"
+        "export default function Header() { return <h1>Site Title</h1>; }"))
+(define b64a-result (tsx-app->js b64a-files #:entry "pages/index.tsx"))
+(check-true (string-contains? b64a-result "document.createElement(\"h1\")")
+            "B64a: nested component lowered to h1")
+(check-true (string-contains? b64a-result "document.createElement(\"span\")")
+            "B64a: page JSX preserved")
+(check-true (string-contains? b64a-result "document.createElement(\"main\")")
+            "B64a: container wraps content in main")
+
 ;; ── B14: Multi-page routing ────────────────────────────────────
 
 (require racklr/emit-router)

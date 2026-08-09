@@ -66,8 +66,12 @@
       (if (equal? base-dir "")
           rest
           (string-append base-dir rest))
-      ;; "../foo" — go up one directory from base-dir  
-      (let ([parent (regexp-replace #px"/[^/]+$" base-dir "")])
+      ;; "../foo" — go up one directory from base-dir
+      ;; base-dir from split-path has trailing /; strip it before matching.
+      (let* ([clean (regexp-replace #px"/$" base-dir "")]
+             [parent (if (regexp-match #px"/" clean)
+                         (regexp-replace #px"/[^/]+$" clean "")
+                         "")])
         (if (equal? parent "")
             rest
             (string-append parent "/" rest)))))
@@ -117,8 +121,9 @@
               (build-path pkg-dir (string-append subpath ".js"))))))
   
   ;; Check extensions
+  (define full-path-str (path->string full-path))
   (for/or ([ext (in-list '(".js" ".mjs" ".cjs" "/index.js" "/index.mjs" ""))])
-    (define try-path (string-append full-path ext))
+    (define try-path (string-append full-path-str ext))
     (and (file-exists? try-path)
          (list try-path (file->string try-path)))))
 
@@ -163,17 +168,19 @@
   ;; Strip import statements and normalize exports.
   ;; - import ... → removed entirely
   ;; - export const/let/var/function/class/async → keep declaration (strip "export ")
+  ;; - export default function/class/async → keep declaration (strip "export default ")
   ;; - export { X }, export default X, export type X → removed entirely
 
   ;; Phase 1: Remove import statements ([^;] already matches newlines, so no (?s) needed)
   (define s1 (regexp-replace* #px"(?m:^[ \t]*import[^;]*?;[ \t]*\n?)" source ""))
 
-  ;; Phase 2: Remove export { ... }; export default ...; (non-declarative)
-  (define s2 (regexp-replace* #px"(?m:^[ \t]*export[ \t]+(?:\\{[^}]*\\}[ \t]*;|default[^;]*?;|type[^;]*?;|interface[^;]*?;)[ \t]*\n?)" s1 ""))
+  ;; Phase 2: Remove export {X};, export type X; export interface X; and simple re-exports
+  ;;   export default Identifier; — but NOT export default function/class/(
+  (define s2 (regexp-replace* #px"(?m:^[ \t]*export[ \t]+(?:\\{[^}]*\\}[ \t]*;|type[^;]*?;|interface[^;]*?;|default[ \t]+\\w+[ \t]*;)[ \t]*\n?)" s1 ""))
 
-  ;; Phase 3: Strip "export " from declarative exports
-  ;; export const/let/var/function/class/async → const/let/var/function/class/async
-  (define s3 (regexp-replace* #px"(?m:^([ \t]*)export[ \t]+(?=(?:const|let|var|function|class|async)\\b))" s2 "\\1"))
+  ;; Phase 3: Strip "export " / "export default " from declarative exports
+  ;; export [default] const/let/var/function/class/async → declaration
+  (define s3 (regexp-replace* #px"(?m:^([ \t]*)export[ \t]+(?:default[ \t]+)?(?=(?:const|let|var|function|class|async)\\b))" s2 "\\1"))
 
   s3)
 
