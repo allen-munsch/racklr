@@ -683,6 +683,46 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
   (check-true (string-contains? b62-html "b62-slug") "B62: cross-file Node eval embeds slug")
   (delete-directory/files test-dir))
 
+;; ── B67: npm deps in lib/api.ts via Node (gray-matter, remark, remark-html) ─
+
+;; B67a: getStaticProps imports helper that imports from node_modules
+(let ([test-dir "/tmp/b67-tmp"])
+  (when (directory-exists? test-dir)
+    (delete-directory/files test-dir))
+  (make-directory test-dir)
+  (make-directory* (build-path test-dir "node_modules" "test-lib"))
+  (make-directory (build-path test-dir "lib"))
+  ;; Fake npm package
+  (display-to-file
+   "exports.greet = function(name) { return 'Hello, ' + name + '!'; };"
+   (build-path test-dir "node_modules" "test-lib" "index.js")
+   #:exists 'replace)
+  (display-to-file "{\"main\":\"index.js\"}"
+   (build-path test-dir "node_modules" "test-lib" "package.json")
+   #:exists 'replace)
+  ;; package.json for ES module mode
+  (display-to-file "{\"type\":\"module\"}"
+   (build-path test-dir "package.json") #:exists 'replace)
+  ;; Helper that imports from npm package (mimics lib/api.ts)
+  (display-to-file
+   "import { greet } from 'test-lib';\nexport function getGreeting(name: string) { return greet(name); }\n"
+   (build-path test-dir "lib" "api.ts") #:exists 'replace)
+  ;; Page imports helper, uses in getStaticProps (relative import triggers Node eval)
+  (display-to-file
+   "import { getGreeting } from './lib/api';\n"
+   (build-path test-dir "page.ts") #:exists 'replace)
+  (display-to-file
+   "export const getStaticProps = () => { return { props: { msg: getGreeting('World') } }; };\n"
+   (build-path test-dir "page.ts") #:exists 'append)
+  (display-to-file
+   "export default function Page(p: any) { return <div>{p.msg}</div>; }\n"
+   (build-path test-dir "page.ts") #:exists 'append)
+  (define b67-src (file->string (build-path test-dir "page.ts")))
+  (define b67-html
+    (emit-pages (hash "/" b67-src) #:title "B67" #:project-root test-dir))
+  (check-true (string-contains? b67-html "Hello, World!") "B67: npm package import evaluated via Node")
+  (delete-directory/files test-dir))
+
 ;; ── B63: Semicolons stripped from type/interface member lines ───────
 
 ;; B63a: strip ; from type members
