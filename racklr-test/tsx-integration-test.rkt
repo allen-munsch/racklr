@@ -298,6 +298,28 @@ export { App };"
   (make-emit-pages-html ts-parse ts-tokenize ts-tok-type ts-tok-value
                         jsx-parse jsx-tokenize jsx-tok-type jsx-tok-value))
 
+;; ── B66: _app.tsx / _document.tsx handling ───────────────────────────
+
+;; B66a: _app.tsx wraps all pages via #:layout
+(let* ([b66-dir "/tmp/b66-test"]
+       [pages-dir (build-path b66-dir "pages")])
+  (when (directory-exists? b66-dir) (delete-directory/files b66-dir))
+  (make-directory* pages-dir)
+  ;; _app.tsx: wraps pages with a shell div
+  (display-to-file
+   "export default function MyApp({ children }: any) { return <div className=\"app-shell\"><header>Site</header><main>{children}</main></div>; }"
+   (build-path pages-dir "_app.tsx") #:exists 'replace)
+  ;; Page
+  (display-to-file
+   "export default function Home() { return <h1>Home Page</h1>; }"
+   (build-path pages-dir "index.tsx") #:exists 'replace)
+  (define b66-pages (discover-pages pages-dir))
+  (define b66-app (find-app-tsx pages-dir))
+  (define b66-html (emit-pages b66-pages #:title "B66" #:layout b66-app))
+  (check-true (string-contains? b66-html "app-shell") "B66a: _app.tsx layout wrapper rendered")
+  (check-true (string-contains? b66-html "Home Page") "B66a: page content inside layout")
+  (delete-directory/files b66-dir))
+
 (define pages-b14
   (hash "/"       "export default () => <h1>Home</h1>;"
         "/about"  "export default () => <p>About page content</p>;"))
