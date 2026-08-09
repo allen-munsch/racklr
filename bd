@@ -50,6 +50,38 @@
 - **Status:** Pending. Blog-starter uses `<Image>` from `next/image` in components. Need to lower to `<img>` with appropriate attributes (src, width, height, alt) and handle the `priority` prop.
 - **Files:** `racklr/lower-jsx.rkt`
 
+### B69 — Extract HTML template and SPA bootstrap JS from `emit-router.rkt`
+- **Status:** Pending. `emit-router.rkt` embeds the full `<!DOCTYPE html>...` template and the ~40-line SPA client-side routing JavaScript as inline string literals. These are static output artifacts, not pipeline logic. Extract to `racklr/emit-router/template.rkt` so the template can be read and edited without navigating 730 lines of pipeline code.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/template.rkt`
+
+### B70 — Extract page-discovery logic from `emit-router.rkt`
+- **Status:** Pending. `discover-pages` (~50 lines) scans directories for `.tsx`/`.ts` files and builds the pages hash. It's a standalone utility unrelated to the parse→lower→emit pipeline. Extract to `racklr/emit-router/discover.rkt`.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/discover.rkt`
+
+### B71 — Resolve `tsx-preprocess.rkt` / `lower-tsx/hooks.rkt` duplication
+- **Status:** Pending. Both `tsx-preprocess.rkt` (19 lines) and `lower-tsx/hooks.rkt` (380 lines) provide `preprocess-tsx` and `restore-jsx`. Two modules claiming the same exports is a trap for future maintainers. Consolidate: make `tsx-preprocess.rkt` an explicit re-export shim of `lower-tsx/hooks.rkt` with a comment, or fold the 19-line file into hooks.rkt and update all callers.
+- **Files:** `racklr/tsx-preprocess.rkt`, `racklr/lower-tsx/hooks.rkt`, `racklr/emit-router.rkt`
+
+### B72 — Complete `lower-typescript.rkt` split into submodules
+- **Status:** Pending. The `lower-typescript/` directory exists with `expr.rkt` (575 lines) and `helpers.rkt` (44 lines), but the parent `lower-typescript.rkt` is still 1561 lines containing statement and declaration lowering. Move stmt/decl lowering into `lower-typescript/stmt.rkt` and keep the parent as a hub that requires submodules — matching the `lower-python/` pattern (stmt.rkt, expr.rkt, pattern.rkt, helpers.rkt).
+- **Files:** `racklr/lower-typescript.rkt` → `racklr/lower-typescript/stmt.rkt`
+
+### B73 — Extract page processing pipeline from `emit-router.rkt`
+- **Status:** Pending. `page->js` (~200 lines) is the core pipeline chain: preprocess→parse→lower→hook-lower→restore→emit. It's the function most likely to need debugging and it should be testable independently of the HTML template, SPA bootstrap, and routing logic. Extract to `racklr/emit-router/pipeline.rkt` (depends on B69, B70 completing first so the remaining file is small enough to work with).
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/pipeline.rkt`
+
+### B74 — Extract `make-emit-pages-html` factory from `emit-router.rkt`
+- **Status:** Pending. The factory function that takes pre-loaded parsers and returns the emit closure is the public API boundary. Extracting it to `racklr/emit-router/factory.rkt` makes the dependency injection pattern explicit and leaves `emit-router.rkt` as a ~30-line hub that requires submodules and re-exports.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/factory.rkt`
+
+### B75 — Split `lower-javascript.rkt` into stmt/expr submodules
+- **Status:** Pending. `lower-javascript.rkt` (1264 lines) is a single-file module handling all JS lowering. Split into `lower-javascript/stmt.rkt` and `lower-javascript/expr.rkt` following the `lower-python/` and `lower-typescript/` pattern.
+- **Files:** `racklr/lower-javascript.rkt` → `racklr/lower-javascript/`
+
+### B76 — Split `gend-parser.rkt` into submodules
+- **Status:** Pending. `gend-parser.rkt` (1148 lines) generates Racket lexer/parser modules from ANTLR4 grammar CSTs. It is stable and rarely changes, so this is the lowest-priority refactoring bead. Split into submodules for rules, actions, and codegen.
+- **Files:** `racklr/gend-parser.rkt` → `racklr/gend-parser/`
+
 ## Archive
 
 <details>
