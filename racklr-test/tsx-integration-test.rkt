@@ -723,32 +723,40 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
   (check-true (string-contains? b67-html "Hello, World!") "B67: npm package import evaluated via Node")
   (delete-directory/files test-dir))
 
-;; ── B63: Semicolons stripped from type/interface member lines ───────
+;; ── B63: Insert ; between newline-separated type/interface members ──
+;; The ANTLR TS grammar requires `;`/`,` separators and a trailing `;` after
+;; `type X = {...}` (its `eos` rule is `SemiColon | EOF`), while standard TS
+;; allows bare newlines. preprocess-imports must *insert* separators.
 
-;; B63a: strip ; from type members
+;; B63a: insert ; between newline-separated type members
 (let ([processed (preprocess-imports
-                  "type Props = {\n  x: string;\n  y: number;\n}")])
-  (check-false (string-contains? processed ";") "B63a: semicolons stripped from type members"))
+                  "type Props = {\n  x: string\n  y: number\n}")])
+  (check-true (string-contains? processed "x: string;") "B63a: ; inserted after type member")
+  (check-true (string-contains? processed "y: number;") "B63a: ; inserted after second type member")
+  (check-true (string-contains? processed "};") "B63a: ; inserted after type alias"))
 
-;; B63b: strip ; from interface members
+;; B63b: insert ; between newline-separated interface members
 (let ([processed (preprocess-imports
-                  "interface I {\n  name: string;\n  age: number;\n}")])
-  (check-false (string-contains? processed ";") "B63b: semicolons stripped from interface members"))
+                  "interface I {\n  name: string\n  age: number\n}")])
+  (check-true (string-contains? processed "name: string;") "B63b: ; inserted after interface member")
+  (check-true (string-contains? processed "age: number;") "B63b: ; inserted after second interface member"))
 
 ;; B63c: normalize double-space after {
 (let ([processed (preprocess-imports
                   "type Props = {  x: string; y: number }")])
   (check-true (string-contains? processed "{ x:") "B63c: normalize double-space after {"))
 
-;; B63d: full pipeline with type having semicolons
+;; B63d: full pipeline with type members carrying semicolons
 (let ([js (tsx->js
-           "import React from 'react'
-            type Props = {
+           "type Props = {
               title: string;
               count: number;
             }
-            export default function Page(props: Props) {
-              return <div>{props.title}{props.count}</div>
+            function Page(props: Props) {
+              return <div>{props.title}{props.count}</div>;
             }")])
   (check-true (string-contains? js "function Page") "B63d: type with semicolons lowers correctly")
   (check-true (string-contains? js "props.title") "B63d: props access works"))
+
+;; Remove gen-tmp-*.rkt parser artifacts so they don't pollute `raco test racklr-test/*.rkt`.
+(cleanup)

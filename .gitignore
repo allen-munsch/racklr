@@ -5,6 +5,7 @@
 .beads-credential-key
 # Generated parser artifacts (build output)
 gen-*-tmp.rkt
+gen-tmp-*.rkt
 gen-sqlite-parser.rkt
 gen-sqlite-tmp.rkt
 # ANTLR grammars (nested git repo)

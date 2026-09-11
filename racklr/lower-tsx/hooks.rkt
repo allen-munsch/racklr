@@ -21,11 +21,14 @@
           [(char=? (string-ref s pos) #\}) (loop (+ pos 1) (- depth 1))]
           [else (loop (+ pos 1) depth)])))
 
-;; ── B63: Strip ; from type/interface member lines (ANTLR grammar doesn't accept ;) ─
+;; ── B56/B63: Insert ; between type/interface members separated by newlines ─
+;; The ANTLR TS grammar requires `;` or `,` between members of `type X = {}`
+;; and `interface X {}` blocks; standard TS allows bare newlines. Semicolons
+;; are accepted by the grammar, so we *add* them rather than strip them.
 
-(define (strip-type-semicolons source)
+(define (insert-type-separators source)
   ;; Scan for `type X = {` or `interface X ... {` blocks, and within each,
-  ;; strip trailing `;` from member lines.
+  ;; add `;` at the end of member lines that lack a separator.
   (define rx-type-start #px"(?:type|interface)\\s+\\w+\\s*(?:[^{]*?)\\s*\\{")
   (let loop ([s source] [start 0])
     (define m (regexp-match-positions rx-type-start s start (string-length s)))
@@ -39,22 +42,34 @@
               ;; Unmatched brace — skip past the { and continue
               (loop s (+ brace-pos 1))
               (let* ([block-content (substring after-brace 1 close-pos)]
-                     [fixed-block (strip-semicolons-from-lines block-content)]
+                     [fixed-block (fix-type-member-lines block-content)]
                      [before (substring s 0 brace-pos)]
                      [close-abs (+ brace-pos close-pos)]
-                     [after (substring s (add1 close-abs))])
-                (define new-s (string-append before "{" fixed-block "}" after))
-                (loop new-s (+ (string-length before) 1 (string-length fixed-block) 1))))))))
+                     [after (substring s (add1 close-abs))]
+                     ;; The grammar's `typeAliasDeclaration` ends in `eos`
+                     ;; (SemiColon | EOF); a bare newline before the next
+                     ;; statement does not terminate a `type X = {...}`. Add a
+                     ;; `;` after the closing `}` when the next non-space char
+                     ;; isn't already `;` (interfaces accept it, so this is
+                     ;; harmless there too).
+                     [needs-semi (not (regexp-match? #px"^[[:space:]]*;" after))])
+                (define new-s (string-append before "{" fixed-block "}"
+                                             (if needs-semi ";" "") after))
+                (loop new-s (+ (string-length before) 1
+                               (string-length fixed-block) 1
+                               (if needs-semi 1 0)))))))))
 
-(define (strip-semicolons-from-lines block-str)
-  ;; Strip trailing ; from each non-empty line in the block.
-  (define lines (string-split block-str "\n"))
+(define (fix-type-member-lines block-str)
+  ;; For each line in the block: if it's non-empty and doesn't end with
+  ;; {, }, ,, or ;, add ; at the end. #:trim? #f preserves the leading
+  ;; and trailing newlines of the block.
+  (define lines (string-split block-str "\n" #:trim? #f))
   (string-join
    (for/list ([line (in-list lines)])
-     (cond [(regexp-match #px";\\s*$" (string-trim line))
-            ;; Replace the last ; on the line, preserving indentation and trailing content
-            (regexp-replace #px";(\\s*)$" line "\\1")]
-           [else line]))
+     (define trimmed (string-trim line))
+     (cond [(equal? trimmed "") line]
+           [(regexp-match #rx"[{},;]\\s*$" trimmed) line]
+           [else (string-append line ";")]))
    "\n"))
 
 ;; ── Import stripping (regex — keeps source valid for TS parser) ─────
@@ -83,12 +98,12 @@
         (regexp-replace* rx-default source "") "") ""))
   (define s3b (foldl (lambda (pkg src) (strip-npm-import src pkg)) s3 '("classnames" "date-fns")))
 
-  ;; Step 1.6: Normalize double-spaces after { (ANTLR tokenizer quirk: {  → different token)
-  (define s4 (regexp-replace* #px"\\{\\s{2,}" s3b "{ "))
+  ;; Step 1.6: Normalize double-spaces after { (only literal spaces — do not
+  ;; collapse `{\n`, which would join the opening brace onto the first member)
+  (define s4 (regexp-replace* #px"\\{ {2,}" s3b "{ "))
 
-  ;; Step 1.7: Strip ; from type/interface member lines (B63)
-  ;; The ANTLR TS grammar does not accept ; as a type member separator.
-  (strip-type-semicolons s4))
+  ;; Step 1.7: Insert ; between type/interface members separated by newlines
+  (insert-type-separators s4))
 
 ;; ── Identifier scanning helpers ─────────────────────────────────────
 
