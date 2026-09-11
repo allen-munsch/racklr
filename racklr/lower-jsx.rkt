@@ -57,6 +57,25 @@
         (uir-attribute (uir-symbol 'onClick)
                        (uir-jsx-expr onclick-expr))))
 
+;; ── Image component → <img> attribute transform ────────────────────
+;; <Image src=... width=... height=... alt=... [priority]> →
+;; <img ... loading="eager"|"lazy">. `priority` is a Next.js boolean prop
+;; that maps to eager loading; it is dropped from the DOM attributes.
+
+(define (image-attrs->img-attrs attrs)
+  (define priority?
+    (for/or ([attr (in-list attrs)])
+      (and (uir-attribute? attr)
+           (eq? (uir-symbol-name (uir-attribute-name attr)) 'priority))))
+  (define img-attrs
+    (filter (λ (attr)
+              (not (and (uir-attribute? attr)
+                        (eq? (uir-symbol-name (uir-attribute-name attr)) 'priority))))
+            attrs))
+  (append img-attrs
+          (list (uir-attribute (uir-symbol 'loading)
+                               (uir-string (if priority? "eager" "lazy"))))))
+
 ;; ── Token helpers ───────────────────────────────────────────────────
 
 (define ((tok-type-match? name) n tk-type)
@@ -113,6 +132,7 @@
   ;; Is tag a component (uppercase first char) or HTML element?
   ;; Special case: Link component → <a> with hash-based href + onclick
   (define (is-link? tag-name) (string=? tag-name "Link"))
+  (define (is-image? tag-name) (string=? tag-name "Image"))
   
   (define tag-name-uir
     (cond [(is-link? tag-str) (uir-string "a")]
@@ -135,11 +155,12 @@
         (lower-jsx-attrs attrs-node tk-type tk-value)
         '()))
   
-  ;; Transform Link attributes to <a> with hash-based href + onclick
+  ;; Transform Link attributes to <a> with hash-based href + onclick,
+  ;; and Image attributes to <img> with loading (eager/lazy).
   (define attrs
-    (if (is-link? tag-str)
-        (link-attrs->anchor-attrs raw-attrs)
-        raw-attrs))
+    (cond [(is-link? tag-str) (link-attrs->anchor-attrs raw-attrs)]
+          [(is-image? tag-str) (image-attrs->img-attrs raw-attrs)]
+          [else raw-attrs]))
   
   ;; B59: ErrorPage → extract statusCode for error text child
   (define error-children

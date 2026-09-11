@@ -758,5 +758,23 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
   (check-true (string-contains? js "function Page") "B63d: type with semicolons lowers correctly")
   (check-true (string-contains? js "props.title") "B63d: props access works"))
 
+;; ── B68: next/image <Image> → <img> with loading (eager/lazy) ───────
+
+;; B68a: <Image> without priority → <img loading="lazy">, props pass through
+(let ([js (tsx->js
+           "const img = <Image src=\"/a.jpg\" width={1300} height={630} alt=\"A\" />;")])
+  (check-true (string-contains? js "createElement(\"img\")") "B68a: Image lowers to img")
+  (check-true (string-contains? js "setAttribute(\"src\",\"/a.jpg\")") "B68a: src passes through")
+  (check-true (string-contains? js "setAttribute(\"width\",1300)") "B68a: width passes through")
+  (check-true (string-contains? js "setAttribute(\"height\",630)") "B68a: height passes through")
+  (check-true (string-contains? js "setAttribute(\"alt\",\"A\")") "B68a: alt passes through")
+  (check-true (string-contains? js "setAttribute(\"loading\",\"lazy\")") "B68a: default loading is lazy"))
+
+;; B68b: <Image priority> → <img loading="eager">, priority prop dropped
+(let ([js (tsx->js
+           "const img = <Image src=\"/a.jpg\" width={100} height={50} priority />;")])
+  (check-true (string-contains? js "setAttribute(\"loading\",\"eager\")") "B68b: priority maps to eager")
+  (check-false (string-contains? js "priority") "B68b: priority prop dropped"))
+
 ;; Remove gen-tmp-*.rkt parser artifacts so they don't pollute `raco test racklr-test/*.rkt`.
 (cleanup)
