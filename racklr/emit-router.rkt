@@ -9,7 +9,8 @@
          racklr/lower-jsx
          racklr/lower-tsx/css-modules
          racklr/uir
-         (prefix-in ts-lower: racklr/lower-typescript))
+         (prefix-in ts-lower: racklr/lower-typescript)
+         "emit-router/template.rkt")
 
 (provide emit-pages-html
          make-emit-pages-html
@@ -550,131 +551,49 @@
                  "}")
            "\n")))
     
-    (define mount-param-extract
-      (if (null? dynamic-patterns)
-          "          var params = null;"
-          "          var params = _matchDynamic(path);"))
-
-    ;; Assemble router JS
-    (define polyfill-classnames
+    ;; Assemble the router JS. The static SPA skeleton and HTML template
+    ;; live in template.rkt; the dynamic pieces (page data, layout, route
+    ;; matching, nav links) are computed here and passed in.
+    (define page-data-str
       (string-join
-       '("var cn = function() {"
-         "  var classes = [];"
-         "  for (var i = 0; i < arguments.length; i++) {"
-         "    var arg = arguments[i];"
-         "    if (!arg) continue;"
-         "    var argType = typeof arg;"
-         "    if (argType === 'string' || argType === 'number') {"
-         "      classes.push(arg);"
-         "    } else if (Array.isArray(arg)) {"
-         "      classes.push(cn.apply(null, arg));"
-         "    } else if (argType === 'object') {"
-         "      for (var key in arg) {"
-         "        if (Object.prototype.hasOwnProperty.call(arg, key) && arg[key]) {"
-         "          classes.push(key);"
-         "        }"
-         "      }"
-         "    }"
-         "  }"
-         "  return classes.join(' ');"
-         "};")
-       "\n"))
-    (define polyfill-date-fns
-      "var format = function(d, fmt) { return String(d); };")
-    (define router-lines
-      (list
-       "// B65: npm polyfills"
-       polyfill-classnames
-       polyfill-date-fns
-       ""
-       (if layout-fn
-           (format "var _layout = ~a;" layout-fn)
-           "var _layout = null;")
-       ""
-       "var _pageData = {"
-       (string-join
-        (for/list ([entry (in-list page-entries)])
-          (define path (first entry))
-          (define props (third entry))
-          (format "  \"~a\": ~a" path (or props "null")))
-        ",\n")
-       "};"
-       ""
-       "var _pages = {"
-       (string-join
-        (for/list ([entry (in-list page-entries)])
-          (define path (first entry))
-          (define js (second entry))
-          (format "  \"~a\": ~a" path js))
-        ",\n")
-       "};"
-       ""
-       "var _serverData = {"
-       (string-join
-        (for/list ([entry (in-list page-entries)])
-          (define path (first entry))
-          (define srv (fourth entry))
-          (format "  \"~a\": ~a" path (if srv (format "/* server-only */ ~a" srv) "null")))
-        ",\n")
-       "};"
-       ""
-       dynamic-match-js
-       ""
-       "function _mount(path) {"
-       "  var app = document.getElementById(\"_app\");"
-       "  var _cs = window._cleanups || [];"
-       "  for (var _i = 0; _i < _cs.length; _i++) _cs[_i]();"
-       "  window._cleanups = [];"
-       "  app.innerHTML = \"\";"
-       "  window._currentPath = path;"
-       "  window._rerender = function() { _mount(window._currentPath); };"
-       "  var pageFn = _pages[path];"
-       (if (null? dynamic-patterns)
-           "  var params = null;"
-           "  var params = null;")
-       "  if (!pageFn) {"
-       "    params = _matchDynamic(path);"
-       "    if (params) {"
-       "      pageFn = _pages[path] || Object.keys(_pages).find(function(k) {"
-       "        var r = new RegExp('^' + k.replace(/:[^/]+/g, '([^/]+)') + '$');"
-       "        return r.test(path);"
-       "      });"
-       "      pageFn = pageFn ? _pages[pageFn] : null;"
-       "    }"
-       "  }"
-       "  if (pageFn) {"
-       "    var pageData = _pageData[path];"
-       "    var serverData = _serverData[path];"
-       "    if (pageData || serverData) pageData = Object.assign({}, serverData || {}, pageData || {});"
-       "    if (params) pageData = Object.assign({}, pageData || {}, params);"
-       "    var el = pageFn(pageData);"
-       "    if (_layout) {"
-       "      var merged = Object.assign({}, pageData || {}, { children: el });"
-       "      el = _layout(merged);"
-       "    }"
-       "    if (el) app.appendChild(el);"
-       "  }"
-       "}"
-       ""
-       "window.addEventListener(\"DOMContentLoaded\", function() {"
-       "  _mount(window.location.hash.slice(1) || \"/\");"
-       "});"
-       ""
-       "window.addEventListener(\"hashchange\", function() {"
-       "  _mount(window.location.hash.slice(1) || \"/\");"
-       "});"))
+       (for/list ([entry (in-list page-entries)])
+         (define path (first entry))
+         (define props (third entry))
+         (format "  \"~a\": ~a" path (or props "null")))
+       ",\n"))
 
-    (define router-str (string-join router-lines "\n"))
+    (define pages-str
+      (string-join
+       (for/list ([entry (in-list page-entries)])
+         (define path (first entry))
+         (define js (second entry))
+         (format "  \"~a\": ~a" path js))
+       ",\n"))
+
+    (define server-data-str
+      (string-join
+       (for/list ([entry (in-list page-entries)])
+         (define path (first entry))
+         (define srv (fourth entry))
+         (format "  \"~a\": ~a" path (if srv (format "/* server-only */ ~a" srv) "null")))
+       ",\n"))
+
+    (define router-str
+      (spa-router-template #:layout-fn layout-fn
+                           #:page-data-str page-data-str
+                           #:pages-str pages-str
+                           #:server-data-str server-data-str
+                           #:dynamic-match-js dynamic-match-js))
 
     ;; Build navigation links
     (define nav-links
       (string-join
        (for/list ([entry (in-list page-entries)])
-          (define path (first entry))
-        (format "      <a href=\"#~a\">~a</a>"
-                path
-                (if (equal? path "/") "Home"
-                    (string-titlecase (regexp-replace #rx"^/" path "")))))
+         (define path (first entry))
+         (format "      <a href=\"#~a\">~a</a>"
+                 path
+                 (if (equal? path "/") "Home"
+                     (string-titlecase (regexp-replace #rx"^/" path "")))))
        " | "))
 
     ;; Collect all <Head> content from pages for injection into HTML <head> (B60)
@@ -693,30 +612,11 @@
          (format "  <style>/* ~a */\n~a\n  </style>" path hashed-css))
        "\n"))
 
-    (string-append
-     "<!DOCTYPE html>\n"
-     "<html lang=\"en\">\n"
-     "<head>\n"
-     "  <meta charset=\"UTF-8\">\n"
-     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
-     (format "  <title>~a</title>\n" title)
-     (if (string=? head-content "")
-         ""
-         (string-append head-content "\n"))
-     (if (positive? (hash-count css-module-data))
-         (string-append style-tags "\n")
-         "")
-     "</head>\n"
-     "<body>\n"
-     "  <nav style=\"padding: 1rem; border-bottom: 1px solid #ccc; margin-bottom: 1rem;\">\n"
-     nav-links "\n"
-     "  </nav>\n"
-     "  <div id=\"_app\"></div>\n"
-     "  <script>\n"
-     router-str "\n"
-     "  </script>\n"
-     "</body>\n"
-     "</html>\n")))
+    (html-page-template #:title title
+                        #:head-content head-content
+                        #:style-tags style-tags
+                        #:nav-links nav-links
+                        #:router router-str)))
 
 ;; ── B18: Pages directory discovery ───────────────────────────────────
 
