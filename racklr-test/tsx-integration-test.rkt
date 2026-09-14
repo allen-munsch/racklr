@@ -254,6 +254,42 @@ export { App };"
 (check-true (string-contains? multi-result "document.createElement(\"button\")"))
 (check-true (string-contains? multi-result "createTextNode(\"Click\")"))
 
+;; ── B64: Nested component resolution ──────────────────────────────
+
+;; B64a: Two-level component tree via resolve-imports
+(define b64a-files
+  (hash "pages/index.tsx"
+        "import Container from \"../components/container\";
+         export default function Page() { return <Container><span>hello</span></Container>; }"
+        "components/container.tsx"
+        "import Header from \"./header\";
+         export default function Container(props: any) { return <div><Header /><main>{props.children}</main></div>; }"
+        "components/header.tsx"
+        "export default function Header() { return <h1>Site Title</h1>; }"))
+(define b64a-result (tsx-app->js b64a-files #:entry "pages/index.tsx"))
+(check-true (string-contains? b64a-result "document.createElement(\"h1\")")
+            "B64a: nested component lowered to h1")
+(check-true (string-contains? b64a-result "document.createElement(\"span\")")
+            "B64a: page JSX preserved")
+(check-true (string-contains? b64a-result "document.createElement(\"main\")")
+            "B64a: container wraps content in main")
+
+;; ── B65: npm polyfills ────────────────────────────────────────────
+
+;; B65a: classnames import stripped, polyfill `cn` call preserved
+(let ([js (tsx->js
+           "import cn from 'classnames';
+            export default function Btn() { return cn('base', 'active'); }")])
+  (check-false (string-contains? js "classnames") "B65a: classnames import stripped")
+  (check-true (string-contains? js "cn(") "B65a: cn polyfill call preserved"))
+
+;; B65b: date-fns import stripped, polyfill `format` call preserved
+(let ([js (tsx->js
+           "import { format } from 'date-fns';
+            export default function DateLabel(d: any) { return format(d, 'MMM'); }")])
+  (check-false (string-contains? js "date-fns") "B65b: date-fns import stripped")
+  (check-true (string-contains? js "format(") "B65b: format polyfill call preserved"))
+
 ;; ── B14: Multi-page routing ────────────────────────────────────
 
 (require racklr/emit-router)
@@ -261,6 +297,28 @@ export { App };"
 (define emit-pages
   (make-emit-pages-html ts-parse ts-tokenize ts-tok-type ts-tok-value
                         jsx-parse jsx-tokenize jsx-tok-type jsx-tok-value))
+
+;; ── B66: _app.tsx / _document.tsx handling ───────────────────────────
+
+;; B66a: _app.tsx wraps all pages via #:layout
+(let* ([b66-dir "/tmp/b66-test"]
+       [pages-dir (build-path b66-dir "pages")])
+  (when (directory-exists? b66-dir) (delete-directory/files b66-dir))
+  (make-directory* pages-dir)
+  ;; _app.tsx: wraps pages with a shell div
+  (display-to-file
+   "export default function MyApp({ children }: any) { return <div className=\"app-shell\"><header>Site</header><main>{children}</main></div>; }"
+   (build-path pages-dir "_app.tsx") #:exists 'replace)
+  ;; Page
+  (display-to-file
+   "export default function Home() { return <h1>Home Page</h1>; }"
+   (build-path pages-dir "index.tsx") #:exists 'replace)
+  (define b66-pages (discover-pages pages-dir))
+  (define b66-app (find-app-tsx pages-dir))
+  (define b66-html (emit-pages b66-pages #:title "B66" #:layout b66-app))
+  (check-true (string-contains? b66-html "app-shell") "B66a: _app.tsx layout wrapper rendered")
+  (check-true (string-contains? b66-html "Home Page") "B66a: page content inside layout")
+  (delete-directory/files b66-dir))
 
 (define pages-b14
   (hash "/"       "export default () => <h1>Home</h1>;"
@@ -624,3 +682,99 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
   (check-true (string-contains? b62-html "B62 Title") "B62: cross-file Node eval embeds imported data")
   (check-true (string-contains? b62-html "b62-slug") "B62: cross-file Node eval embeds slug")
   (delete-directory/files test-dir))
+
+;; ── B67: npm deps in lib/api.ts via Node (gray-matter, remark, remark-html) ─
+
+;; B67a: getStaticProps imports helper that imports from node_modules
+(let ([test-dir "/tmp/b67-tmp"])
+  (when (directory-exists? test-dir)
+    (delete-directory/files test-dir))
+  (make-directory test-dir)
+  (make-directory* (build-path test-dir "node_modules" "test-lib"))
+  (make-directory (build-path test-dir "lib"))
+  ;; Fake npm package
+  (display-to-file
+   "exports.greet = function(name) { return 'Hello, ' + name + '!'; };"
+   (build-path test-dir "node_modules" "test-lib" "index.js")
+   #:exists 'replace)
+  (display-to-file "{\"main\":\"index.js\"}"
+   (build-path test-dir "node_modules" "test-lib" "package.json")
+   #:exists 'replace)
+  ;; package.json for ES module mode
+  (display-to-file "{\"type\":\"module\"}"
+   (build-path test-dir "package.json") #:exists 'replace)
+  ;; Helper that imports from npm package (mimics lib/api.ts)
+  (display-to-file
+   "import { greet } from 'test-lib';\nexport function getGreeting(name: string) { return greet(name); }\n"
+   (build-path test-dir "lib" "api.ts") #:exists 'replace)
+  ;; Page imports helper, uses in getStaticProps (relative import triggers Node eval)
+  (display-to-file
+   "import { getGreeting } from './lib/api';\n"
+   (build-path test-dir "page.ts") #:exists 'replace)
+  (display-to-file
+   "export const getStaticProps = () => { return { props: { msg: getGreeting('World') } }; };\n"
+   (build-path test-dir "page.ts") #:exists 'append)
+  (display-to-file
+   "export default function Page(p: any) { return <div>{p.msg}</div>; }\n"
+   (build-path test-dir "page.ts") #:exists 'append)
+  (define b67-src (file->string (build-path test-dir "page.ts")))
+  (define b67-html
+    (emit-pages (hash "/" b67-src) #:title "B67" #:project-root test-dir))
+  (check-true (string-contains? b67-html "Hello, World!") "B67: npm package import evaluated via Node")
+  (delete-directory/files test-dir))
+
+;; ── B63: Insert ; between newline-separated type/interface members ──
+;; The ANTLR TS grammar requires `;`/`,` separators and a trailing `;` after
+;; `type X = {...}` (its `eos` rule is `SemiColon | EOF`), while standard TS
+;; allows bare newlines. preprocess-imports must *insert* separators.
+
+;; B63a: insert ; between newline-separated type members
+(let ([processed (preprocess-imports
+                  "type Props = {\n  x: string\n  y: number\n}")])
+  (check-true (string-contains? processed "x: string;") "B63a: ; inserted after type member")
+  (check-true (string-contains? processed "y: number;") "B63a: ; inserted after second type member")
+  (check-true (string-contains? processed "};") "B63a: ; inserted after type alias"))
+
+;; B63b: insert ; between newline-separated interface members
+(let ([processed (preprocess-imports
+                  "interface I {\n  name: string\n  age: number\n}")])
+  (check-true (string-contains? processed "name: string;") "B63b: ; inserted after interface member")
+  (check-true (string-contains? processed "age: number;") "B63b: ; inserted after second interface member"))
+
+;; B63c: normalize double-space after {
+(let ([processed (preprocess-imports
+                  "type Props = {  x: string; y: number }")])
+  (check-true (string-contains? processed "{ x:") "B63c: normalize double-space after {"))
+
+;; B63d: full pipeline with type members carrying semicolons
+(let ([js (tsx->js
+           "type Props = {
+              title: string;
+              count: number;
+            }
+            function Page(props: Props) {
+              return <div>{props.title}{props.count}</div>;
+            }")])
+  (check-true (string-contains? js "function Page") "B63d: type with semicolons lowers correctly")
+  (check-true (string-contains? js "props.title") "B63d: props access works"))
+
+;; ── B68: next/image <Image> → <img> with loading (eager/lazy) ───────
+
+;; B68a: <Image> without priority → <img loading="lazy">, props pass through
+(let ([js (tsx->js
+           "const img = <Image src=\"/a.jpg\" width={1300} height={630} alt=\"A\" />;")])
+  (check-true (string-contains? js "createElement(\"img\")") "B68a: Image lowers to img")
+  (check-true (string-contains? js "setAttribute(\"src\",\"/a.jpg\")") "B68a: src passes through")
+  (check-true (string-contains? js "setAttribute(\"width\",1300)") "B68a: width passes through")
+  (check-true (string-contains? js "setAttribute(\"height\",630)") "B68a: height passes through")
+  (check-true (string-contains? js "setAttribute(\"alt\",\"A\")") "B68a: alt passes through")
+  (check-true (string-contains? js "setAttribute(\"loading\",\"lazy\")") "B68a: default loading is lazy"))
+
+;; B68b: <Image priority> → <img loading="eager">, priority prop dropped
+(let ([js (tsx->js
+           "const img = <Image src=\"/a.jpg\" width={100} height={50} priority />;")])
+  (check-true (string-contains? js "setAttribute(\"loading\",\"eager\")") "B68b: priority maps to eager")
+  (check-false (string-contains? js "priority") "B68b: priority prop dropped"))
+
+;; Remove gen-tmp-*.rkt parser artifacts so they don't pollute `raco test racklr-test/*.rkt`.
+(cleanup)

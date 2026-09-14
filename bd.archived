@@ -1,0 +1,207 @@
+# racklr issue tracker
+
+## Active
+
+### B56 — TS type/interface member separator required by grammar (not optional)
+- **Status:** Done. Added `insert-type-separators` to `preprocess-imports` step in hooks.rkt. Scans for `type X = {` and `interface X {` blocks, inserts `;` at end of non-empty member lines lacking a `,`, `;`, `{`, or `}` terminator. Blog-starter `[slug].tsx` type blocks now parse correctly.
+- **Files:** `racklr/lower-tsx/hooks.rkt`, `.gitignore`
+
+### B57 — Conditional JSX expressions inside `{...}` not lowered
+- **Status:** Done. Fixed `process-cond-jsx-expr` regexes in conditionals.rkt to use `(?s:)` multiline flag and `\s*` for whitespace. Added `find-jsx-in-text` helper that finds the first `<[a-zA-Z]` in captured text and extracts JSX from there, handling paren-wrapped patterns like `{heroPost && (\n<HeroPost/>\n)}`. Blog-starter index.tsx conditional JSX now lowers correctly.
+- **Files:** `racklr/lower-tsx/conditionals.rkt`, `racklr-test/tsx-integration-test.rkt`
+
+### B58 — next/router `useRouter` not handled
+- **Status:** Done. Added `useRouter` pattern to hook-lower.rkt that replaces `const x = useRouter()` with a shim object `{ isFallback: false, pathname: window.location.pathname, query: {} }`. The `next/router` import is already stripped because `next` is in `known-externals`.
+- **Files:** `racklr/lower-tsx/hook-lower.rkt`, `racklr-test/tsx-integration-test.rkt`
+
+### B59 — `next/error` ErrorPage not stubbed
+- **Status:** Done. Added `ErrorPage` tag mapping in `lower-jsx.rkt` — maps to `<div>` with statusCode extracted from attrs and displayed as text (e.g. `<ErrorPage statusCode={404} />` → `<div>Error 404</div>`). The `next/error` import itself is not stripped (preprocess-imports only handles react/CSS), but the tag lowering works correctly.
+- **Files:** `racklr/lower-jsx.rkt`, `racklr-test/tsx-integration-test.rkt`
+
+### B60 — `next/head` Head content injected into HTML `<head>`
+- **Status:** Done. Added `collect-head-html` UIR walker in `emit-router.rkt` that finds `<head>` elements (which `<Head>` lowers to), extracts their children as HTML, and injects them into the template's `<head>` section. Also added `strip-head-elements` to remove `<head>` elements from the body JS. Head content like `<title>` and `<meta>` now renders in the HTML `<head>` instead of being appended to the DOM body.
+- **Files:** `racklr/emit-router.rkt`, `racklr-test/tsx-integration-test.rkt`
+
+### B61 — Node.js builtins (`fs`, `path`, `process`) used in lib/api.ts
+- **Status:** Done. `eval-gsp-polyfill` in `emit-router.rkt` handles: `process.cwd()` → Racket current-directory, `fs.readdirSync("dir")` → directory-list, `path.join(process.cwd(), "dir")` → build-path, `fs.readFileSync(path, 'utf8')` → frontmatter parsing, `getStaticPaths` literal path expansion. Returns JSON string injected into `_pageData`. Cross-file import resolution (B62) for `lib/api.ts` helpers is done via `eval-gsp-node.rkt` shelling out to Node with `--experimental-strip-types`. Requires `"type":"module"` in project `package.json`.
+- **Files:** `racklr/emit-router.rkt`, `racklr/eval-gsp-node.rkt`, `racklr-test/tsx-integration-test.rkt` (+ tests b61a/b61b/b61c/b61d/b62, 1489 total)
+
+### B63 — ANTLR TS grammar rejects `;` in type/interface members; double-space after `{` breaks tokenization
+- **Status:** Pending. Type members with semicolons (`type Props = { x: string; }`) fail to parse. The grammar expects bare property declarations terminated by newlines or `,`, not `;`. Also `{  ...}` (double space) creates a different token. B56 added semicolons to members lacking them, which inadvertently broke blog-starter parsing. Fix: strip semicolons from type/interface member lines and normalize double-space after `{` in `preprocess-imports`.
+- **Files:** `racklr/lower-tsx/hooks.rkt` (preprocess-imports), `racklr-test/tsx-integration-test.rkt`
+
+### B64 — Component tree resolution: resolve `../components/*` imports, recursively lower+inline
+- **Status:** Pending. Pages import components (Container, Layout, HeroPost, PostBody, etc.) that are `.tsx` files with their own imports. `esbuild-resolve.rkt` can find these files but fails on npm package paths (`string-append` with a path object). Need: (1) fix npm path resolution, (2) recursively lower each component's JSX/TS, (3) inline the lowered UIR/Javascript into the page's output.
+- **Files:** `racklr/esbuild-resolve.rkt`, `racklr/emit-router.rkt`
+
+### B65 — npm package resolution in components (classnames, date-fns from node_modules)
+- **Status:** Pending. Components import from npm packages (`import cn from 'classnames'`, `import { format } from 'date-fns'`). These need `node_modules` resolution and either: polyfill trivial packages, or include the module in the emitted bundle.
+- **Files:** `racklr/esbuild-resolve.rkt`, `racklr/emit-router.rkt`
+
+### B66 — `_app.tsx` / `_document.tsx` handling
+- **Status:** Pending. Next.js special files serve as the app shell. `_app.tsx` wraps pages with `<Component {...pageProps} />` — needs lowering to a layout template. `_document.tsx` provides the `<Html>`, `<Head>`, `<body>` structure.
+- **Files:** `racklr/emit-router.rkt`
+
+### B67 — npm deps in `lib/api.ts` via Node (gray-matter, remark, remark-html)
+- **Status:** Pending. Blog-starter `lib/api.ts` uses `gray-matter` for frontmatter parsing and `markdownToHtml.ts` uses `remark` + `remark-html` for markdown rendering. These npm packages are installed in `node_modules` but B62's `eval-gsp-node.rkt` doesn't yet resolve them. Fix: ensure `node --experimental-strip-types` can find packages in `node_modules` (requires running from project-root where `node_modules` exists — likely already works, needs verification).
+- **Files:** `racklr/eval-gsp-node.rkt`
+
+### B68 — `next/image` component handling
+- **Status:** Pending. Blog-starter uses `<Image>` from `next/image` in components. Need to lower to `<img>` with appropriate attributes (src, width, height, alt) and handle the `priority` prop.
+- **Files:** `racklr/lower-jsx.rkt`
+
+### B69 — Extract HTML template and SPA bootstrap JS from `emit-router.rkt`
+- **Status:** Pending. `emit-router.rkt` embeds the full `<!DOCTYPE html>...` template and the ~40-line SPA client-side routing JavaScript as inline string literals. These are static output artifacts, not pipeline logic. Extract to `racklr/emit-router/template.rkt` so the template can be read and edited without navigating 730 lines of pipeline code.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/template.rkt`
+
+### B70 — Extract page-discovery logic from `emit-router.rkt`
+- **Status:** Pending. `discover-pages` (~50 lines) scans directories for `.tsx`/`.ts` files and builds the pages hash. It's a standalone utility unrelated to the parse→lower→emit pipeline. Extract to `racklr/emit-router/discover.rkt`.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/discover.rkt`
+
+### B71 — Resolve `tsx-preprocess.rkt` / `lower-tsx/hooks.rkt` duplication
+- **Status:** Pending. Both `tsx-preprocess.rkt` (19 lines) and `lower-tsx/hooks.rkt` (380 lines) provide `preprocess-tsx` and `restore-jsx`. Two modules claiming the same exports is a trap for future maintainers. Consolidate: make `tsx-preprocess.rkt` an explicit re-export shim of `lower-tsx/hooks.rkt` with a comment, or fold the 19-line file into hooks.rkt and update all callers.
+- **Files:** `racklr/tsx-preprocess.rkt`, `racklr/lower-tsx/hooks.rkt`, `racklr/emit-router.rkt`
+
+### B72 — Complete `lower-typescript.rkt` split into submodules
+- **Status:** Pending. The `lower-typescript/` directory exists with `expr.rkt` (575 lines) and `helpers.rkt` (44 lines), but the parent `lower-typescript.rkt` is still 1561 lines containing statement and declaration lowering. Move stmt/decl lowering into `lower-typescript/stmt.rkt` and keep the parent as a hub that requires submodules — matching the `lower-python/` pattern (stmt.rkt, expr.rkt, pattern.rkt, helpers.rkt).
+- **Files:** `racklr/lower-typescript.rkt` → `racklr/lower-typescript/stmt.rkt`
+
+### B73 — Extract page processing pipeline from `emit-router.rkt`
+- **Status:** Pending. `page->js` (~200 lines) is the core pipeline chain: preprocess→parse→lower→hook-lower→restore→emit. It's the function most likely to need debugging and it should be testable independently of the HTML template, SPA bootstrap, and routing logic. Extract to `racklr/emit-router/pipeline.rkt` (depends on B69, B70 completing first so the remaining file is small enough to work with).
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/pipeline.rkt`
+
+### B74 — Extract `make-emit-pages-html` factory from `emit-router.rkt`
+- **Status:** Pending. The factory function that takes pre-loaded parsers and returns the emit closure is the public API boundary. Extracting it to `racklr/emit-router/factory.rkt` makes the dependency injection pattern explicit and leaves `emit-router.rkt` as a ~30-line hub that requires submodules and re-exports.
+- **Files:** `racklr/emit-router.rkt` → `racklr/emit-router/factory.rkt`
+
+### B75 — Split `lower-javascript.rkt` into stmt/expr submodules
+- **Status:** Pending. `lower-javascript.rkt` (1264 lines) is a single-file module handling all JS lowering. Split into `lower-javascript/stmt.rkt` and `lower-javascript/expr.rkt` following the `lower-python/` and `lower-typescript/` pattern.
+- **Files:** `racklr/lower-javascript.rkt` → `racklr/lower-javascript/`
+
+### B76 — Split `gend-parser.rkt` into submodules
+- **Status:** Pending. `gend-parser.rkt` (1148 lines) generates Racket lexer/parser modules from ANTLR4 grammar CSTs. It is stable and rarely changes, so this is the lowest-priority refactoring bead. Split into submodules for rules, actions, and codegen.
+- **Files:** `racklr/gend-parser.rkt` → `racklr/gend-parser/`
+
+## Archive
+
+<details>
+<summary>B1-B55 (completed before 2026-07-10)</summary>
+
+### B55 — Template literal ${expr} grammar gap
+- **Status:** Done.
+
+### B54 — Object spread ...x lowered as function call
+- **Status:** Done.
+
+### B53 — Optional chaining ?. lowered as function call
+- **Status:** Done.
+
+### B52 — Destructured function params dropped during lowering
+- **Status:** Done.
+
+### B51 — Object shorthand in JSX expressions lowered as empty record
+- **Status:** Done.
+
+### B50 — `export default function` loses body in lowering
+- **Status:** Done.
+
+### B49 — TS features: satisfies, as const, template literal types
+- **Status:** Done.
+
+### B48 — Synthetic event system
+- **Status:** Done.
+
+### B47 — React API: forwardRef, memo, Suspense, lazy, createPortal
+- **Status:** Done.
+
+### B46 — CSS module `composes` / `@value` / advanced features
+- **Status:** Done.
+
+### B45 — useEffect dependency array semantics
+- **Status:** Done.
+
+### B44 — Provider stack for context
+- **Status:** Done.
+
+### B43 — Third-party import resolution (node_modules)
+- **Status:** Done.
+
+### B42 — TS lexer: identifiers ending in digits split
+- **Status:** Done.
+
+### B41 — TS lowerer object destructuring
+- **Status:** Done.
+
+### B40 — TS lowerer array destructuring
+- **Status:** Done.
+
+### B39 — TypeScript generics / type parameters
+- **Status:** Done.
+
+### B38 — `lower-typescript.rkt` split
+- **Status:** Done.
+
+### B37 — esbuild dependency removal
+- **Status:** Done.
+
+### B36 — TS parser bug: `func(arrow, [array])` fails
+- **Status:** Done.
+
+### B35 — Remove regex hooks, use parser-based UIR transforms
+- **Status:** Done.
+
+### B34 — `next/image` and `next/head` stubs
+- **Status:** Done.
+
+### B33 — Dynamic routes (`[slug].tsx`)
+- **Status:** Done.
+
+### B32 — React.Fragment (`<></>`) support
+- **Status:** Done.
+
+### B31 — `children` prop from JSX nesting
+- **Status:** Done.
+
+### B30 — CSS module class name generation
+- **Status:** Done.
+
+### B29 — No re-render on state change
+- **Status:** Done.
+
+### B28 — CSS modules / styled-jsx baseline
+- **Status:** Done.
+
+### B27 — `getStaticProps` computed values
+- **Status:** Done.
+
+### B26 — `getServerSideProps` data extraction
+- **Status:** Done.
+
+### B25 — `Link` component / client-side navigation
+- **Status:** Done.
+
+### B24 — `useReducer`
+- **Status:** Done.
+
+### B23 — `useContext`
+- **Status:** Done.
+
+### B22 — `useCallback` and `useMemo`
+- **Status:** Done.
+
+### B21 — `useRef`
+- **Status:** Done.
+
+### B20 — `useEffect` cleanup function
+- **Status:** Done.
+
+### B19 — Shared layout wrapper
+- **Status:** Done.
+
+### B18 — Pages directory discovery
+- **Status:** Done.
+
+### B17 — getStaticProps data inlining at build time
+- **Status:** Done.
+
+</details>
