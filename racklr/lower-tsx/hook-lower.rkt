@@ -79,7 +79,8 @@
                                              (list (uir-symbol ctx-name) (uir-symbol "_provider")))
                                    (uir-symbol "pop")))
                    '())
-         (uir-return (uir-symbol "_r")))))
+         (uir-return (uir-symbol "_r"))))
+         #f #f)
      '()))
   
   (let walk ([node uir])
@@ -155,7 +156,7 @@
                                                                              (uir-symbol "_rerender")))
                                                              '())
                                                    (uir-null))))
-                                         #f))))))]
+                                         #f #f))))))]
 
     ;; ── useEffect(callback, deps) → IIFE + cleanup + deps diffing ────
     [(uir-call (uir-var (uir-symbol "useEffect"))
@@ -272,7 +273,7 @@
                                                       (uir-call reducer
                                                                 (list rd-state-name
                                                                       (uir-symbol "action"))))))
-                                          #f))))))]
+                                          #f #f))))))]
 
     ;; ══════════════════════════════════════════════════════════════════
     ;; ── React API stubs (B47) ────────────────────────────────────────
@@ -309,7 +310,7 @@
                                           (uir-return
                                            (uir-call (uir-symbol "document.createElement")
                                                      (list (uir-string "div"))))))
-                                        #f))))]
+                                        #f #f))))]
 
     ;; ── Suspense: <Suspense fallback={...}>children</Suspense> ────────
     ;; In JSX lowering: (uir-call Suspense (list (uir-record ((fallback . fb))) children))

@@ -12,7 +12,7 @@
  uir-symbol uir-symbol? uir-symbol-name
  ;; Functions and control flow
  uir-fn uir-fn? uir-fn-name uir-fn-params uir-fn-body
- uir-fn-return-type
+ uir-fn-return-type uir-fn-effects
  uir-typed-param uir-typed-param? uir-typed-param-name uir-typed-param-type uir-typed-param-default
  uir-call uir-call? uir-call-callee uir-call-args
  uir-let uir-let? uir-let-name uir-let-value uir-let-body
@@ -67,10 +67,15 @@
  uir-text-node uir-text-node? uir-text-node-content
  uir-style uir-style? uir-style-styles
  uir-effect uir-effect? uir-effect-deps uir-effect-body
- uir-state uir-state? uir-state-name uir-state-init
+  uir-state uir-state? uir-state-name uir-state-init
   uir-jsx-expr uir-jsx-expr? uir-jsx-expr-content
   ;; Spread operator (...expr)
-  uir-spread uir-spread? uir-spread-expr)
+  uir-spread uir-spread? uir-spread-expr
+  ;; Effect rows (contract algebra)
+  uir-effect-row uir-effect-row? uir-effect-row-entries
+  uir-effect-entry uir-effect-entry? uir-effect-entry-name uir-effect-entry-modality
+  uir-effect-entry-ops uir-effect-entry-budget uir-effect-entry-scope
+  uir-subtype uir-subtype? uir-subtype-left uir-subtype-right)
 
 ;; ── Tier 0: Core Computational IR ──────────────────────────────────
 
@@ -89,7 +94,7 @@
 (struct uir-symbol (name) #:transparent)
 
 ;; Functions and control flow
-(struct uir-fn (name params body return-type) #:transparent)  ;; name: #f or uir-symbol, return-type: #f or uir?
+(struct uir-fn (name params body return-type effects) #:transparent)  ;; name: #f or uir-symbol, return-type: #f or uir?, effects: #f or uir-effect-row
 (struct uir-typed-param (name type default) #:transparent)   ;; name: uir-symbol, type/default: #f or uir?
 (struct uir-call (callee args) #:transparent)    ;; callee: uir?, args: (listof uir?)
 (struct uir-let (name value body) #:transparent) ;; name: uir-symbol, value: uir?, body: uir?
@@ -210,3 +215,21 @@
 
 ;; Spread operator (...expr)
 (struct uir-spread (expr) #:transparent)
+
+;; ── Effect Rows (contract algebra) ─────────────────────────────────
+
+;; A single effect constraint: an opaque effect name plus a modality.
+;;   name:     uir-symbol (opaque; never interpreted by racklr)
+;;   modality: 'may | 'must | 'must-not | 'unknown
+;;   ops:      (listof uir-symbol) — empty means "all operations"
+;;   budget:   #f or integer (upper bound on invocations)
+;;   scope:    #f or uir-symbol (resource / information-flow qualifier)
+(struct uir-effect-entry (name modality ops budget scope) #:transparent)
+
+;; An ordered set of effect entries attached to a function or mutator.
+;; Absence of an entry is prohibition (must-not) by default.
+(struct uir-effect-row (entries) #:transparent)
+
+;; First-class subtype constraint: left ≤ right (left's may/budgets are
+;; within right's). Survives lowering so downstream passes can check it.
+(struct uir-subtype (left right) #:transparent)

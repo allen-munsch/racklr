@@ -49,10 +49,10 @@
 
 (define (test-fn-construction)
   (define f (uir-fn #f (list (uir-symbol "x") (uir-symbol "y"))
-                    (uir-call (uir-var (uir-symbol "+"))
-                              (list (uir-var (uir-symbol "x"))
-                                    (uir-var (uir-symbol "y"))))
-                    #f))
+                     (uir-call (uir-var (uir-symbol "+"))
+                               (list (uir-var (uir-symbol "x"))
+                                     (uir-var (uir-symbol "y"))))
+                     #f #f))
   (check-true (uir? f) "uir-fn satisfies uir?")
   (check-equal? (uir-tag f) 'fn "uir-fn tag is 'fn")
   (check-equal? (length (uir-fn-params f)) 2 "uir-fn has 2 params")
@@ -214,7 +214,7 @@
 
 (define (test-event-construction)
   (define e (uir-event (uir-string "submit")
-                       (uir-fn #f (list (uir-symbol "e")) (uir-null) #f)))
+                       (uir-fn #f (list (uir-symbol "e")) (uir-null) #f #f)))
   (check-true (uir? e) "uir-event satisfies uir?")
   (check-equal? (uir-tag e) 'event "uir-event tag is 'event")
   (check-equal? (uir-string-value (uir-event-name e)) "submit" "uir-event name"))
@@ -249,6 +249,34 @@
   (check-true (uir? s) "uir-state satisfies uir?")
   (check-equal? (uir-tag s) 'state "uir-state tag is 'state")
   (check-equal? (uir-symbol-name (uir-state-name s)) "items" "uir-state name"))
+
+(define (test-effect-entry-construction)
+  (define e (uir-effect-entry (uir-symbol "llm") 'may
+                              (list (uir-symbol "query")) 5
+                              (uir-symbol "reads=search_index")))
+  (check-true (uir? e) "uir-effect-entry satisfies uir?")
+  (check-equal? (uir-tag e) 'effect-entry "uir-effect-entry tag is 'effect-entry")
+  (check-equal? (uir-symbol-name (uir-effect-entry-name e)) "llm" "uir-effect-entry name")
+  (check-equal? (uir-effect-entry-modality e) 'may "uir-effect-entry modality")
+  (check-equal? (length (uir-effect-entry-ops e)) 1 "uir-effect-entry ops")
+  (check-equal? (uir-effect-entry-budget e) 5 "uir-effect-entry budget")
+  (check-equal? (uir-symbol-name (uir-effect-entry-scope e)) "reads=search_index" "uir-effect-entry scope"))
+
+(define (test-effect-row-construction)
+  (define r (uir-effect-row
+             (list (uir-effect-entry (uir-symbol "llm") 'may '() 5 #f)
+                   (uir-effect-entry (uir-symbol "db") 'may '() #f (uir-symbol "reads=search_index")))))
+  (check-true (uir? r) "uir-effect-row satisfies uir?")
+  (check-equal? (uir-tag r) 'effect-row "uir-effect-row tag is 'effect-row")
+  (check-equal? (length (uir-effect-row-entries r)) 2 "uir-effect-row has 2 entries"))
+
+(define (test-subtype-construction)
+  (define s (uir-subtype (uir-effect-row '())
+                         (uir-effect-row (list (uir-effect-entry (uir-symbol "net") 'may '() #f #f)))))
+  (check-true (uir? s) "uir-subtype satisfies uir?")
+  (check-equal? (uir-tag s) 'subtype "uir-subtype tag is 'subtype")
+  (check-true (uir-effect-row? (uir-subtype-left s)) "uir-subtype left")
+  (check-equal? (length (uir-effect-row-entries (uir-subtype-right s))) 1 "uir-subtype right"))
 
 ;; ── Serialization Round-Trip ───────────────────────────────────────
 
@@ -303,10 +331,10 @@
     (check-equal? (length (uir-record-entries u2)) 1 "uir-record round-trip entries"))
 
   ;; Fn
-  (let* ([u1 (uir-fn #f (list (uir-symbol "x")) (uir-var (uir-symbol "x")) #f)]
+  (let* ([u1 (uir-fn #f (list (uir-symbol "x")) (uir-var (uir-symbol "x")) #f #f)]
          [s1 (uir->sexp u1)]
          [u2 (sexp->uir s1)])
-    (check-equal? s1 '(fn #f ((symbol "x")) (var (symbol "x")) #f) "uir-fn sexp")
+    (check-equal? s1 '(fn #f ((symbol "x")) (var (symbol "x")) #f #f) "uir-fn sexp")
     (check-true (uir-fn? u2) "uir-fn round-trip"))
 
   ;; Call
@@ -437,7 +465,7 @@
     (check-equal? (uir-string-value (uir-attribute-value u2)) "box" "uir-attribute round-trip value"))
 
   ;; Event
-  (let* ([u1 (uir-event (uir-string "click") (uir-fn #f '() (uir-null) #f))]
+  (let* ([u1 (uir-event (uir-string "click") (uir-fn #f '() (uir-null) #f #f))]
          [s1 (uir->sexp u1)]
          [u2 (sexp->uir s1)])
     (check-true (uir-event? u2) "uir-event round-trip type"))
@@ -473,7 +501,34 @@
          [s1 (uir->sexp u1)]
          [u2 (sexp->uir s1)])
     (check-true (uir-state? u2) "uir-state round-trip type")
-    (check-equal? (uir-symbol-name (uir-state-name u2)) "loading" "uir-state round-trip name")))
+    (check-equal? (uir-symbol-name (uir-state-name u2)) "loading" "uir-state round-trip name"))
+
+  ;; Effect entry
+  (let* ([u1 (uir-effect-entry (uir-symbol "llm") 'may
+                               (list (uir-symbol "query")) 5
+                               (uir-symbol "reads=search_index"))]
+         [s1 (uir->sexp u1)]
+         [u2 (sexp->uir s1)])
+    (check-equal? s1 '(effect-entry (symbol "llm") may ((symbol "query")) 5 (symbol "reads=search_index"))
+                  "uir-effect-entry sexp")
+    (check-equal? (uir-effect-entry-modality u2) 'may "uir-effect-entry round-trip modality")
+    (check-equal? (uir-effect-entry-budget u2) 5 "uir-effect-entry round-trip budget"))
+
+  ;; Effect row
+  (let* ([u1 (uir-effect-row (list (uir-effect-entry (uir-symbol "db") 'must-not '() #f #f)))]
+         [s1 (uir->sexp u1)]
+         [u2 (sexp->uir s1)])
+    (check-equal? s1 '(effect-row (effect-entry (symbol "db") must-not () #f #f))
+                  "uir-effect-row sexp")
+    (check-equal? (length (uir-effect-row-entries u2)) 1 "uir-effect-row round-trip entries"))
+
+  ;; Subtype
+  (let* ([u1 (uir-subtype (uir-effect-row '())
+                          (uir-effect-row (list (uir-effect-entry (uir-symbol "net") 'may '() #f #f))))]
+         [s1 (uir->sexp u1)]
+         [u2 (sexp->uir s1)])
+    (check-true (uir-subtype? u2) "uir-subtype round-trip type")
+    (check-equal? (length (uir-effect-row-entries (uir-subtype-right u2))) 1 "uir-subtype round-trip right")))
 
 ;; ── JSON Serialization Round-Trip ───────────────────────────────────
 
@@ -500,7 +555,7 @@
   (check-equal? (uir-tag (uir-list '())) 'list)
   (check-equal? (uir-tag (uir-record '())) 'record)
   (check-equal? (uir-tag (uir-symbol "x")) 'symbol)
-  (check-equal? (uir-tag (uir-fn #f '() (uir-null) #f)) 'fn)
+  (check-equal? (uir-tag (uir-fn #f '() (uir-null) #f #f)) 'fn)
   (check-equal? (uir-tag (uir-call (uir-null) '())) 'call)
   (check-equal? (uir-tag (uir-let (uir-symbol "x") (uir-null) (uir-null))) 'let)
   (check-equal? (uir-tag (uir-var (uir-symbol "x"))) 'var)
@@ -524,7 +579,10 @@
   (check-equal? (uir-tag (uir-text-node (uir-string ""))) 'text-node)
   (check-equal? (uir-tag (uir-style '())) 'style)
   (check-equal? (uir-tag (uir-effect '() (uir-null))) 'effect)
-  (check-equal? (uir-tag (uir-state (uir-symbol "x") (uir-null))) 'state))
+  (check-equal? (uir-tag (uir-state (uir-symbol "x") (uir-null))) 'state)
+  (check-equal? (uir-tag (uir-effect-row '())) 'effect-row)
+  (check-equal? (uir-tag (uir-effect-entry (uir-symbol "e") 'may '() #f #f)) 'effect-entry)
+  (check-equal? (uir-tag (uir-subtype (uir-effect-row '()) (uir-effect-row '()))) 'subtype))
 
 (module+ main
   (test-null-construction)
@@ -559,6 +617,9 @@
   (test-style-construction)
   (test-effect-construction)
   (test-state-construction)
+  (test-effect-entry-construction)
+  (test-effect-row-construction)
+  (test-subtype-construction)
   (test-sexp-roundtrip)
   (test-json-roundtrip)
   (test-uir-tag)

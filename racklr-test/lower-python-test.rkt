@@ -7,7 +7,8 @@
          racklr/g4-parse
          racklr/gend-parser
          racklr/lower-python
-         racklr/emit-python)
+         racklr/emit-python
+         racklr/effects/contract)
 
 ;; ── Load the Python3 parser ──────────────────────────────────────────
 
@@ -211,6 +212,28 @@
   (check-equal? (length (uir-decorated-decorators uir)) 1 "one decorator")
   (check-true (uir-call? (first (uir-decorated-decorators uir))) "decorator is a call")
   (check-true (uir-fn? (uir-decorated-inner uir)) "inner is uir-fn"))
+
+;; @effects(...) extraction: decorator arg is a positional dict
+(let ([cst (py-parse "@effects({\"llm\": {\"max\": 5}, \"db\": {\"reads\": \"search_index\"}})\ndef summarize(): pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define fn (uir-decorated-inner uir))
+  (check-true (uir-fn? fn) "inner is uir-fn")
+  (check-true (uir-effect-row? (uir-fn-effects fn)) "effects row attached")
+  (define row (uir-fn-effects fn))
+  (check-equal? (uir-effect-entry-budget (row-lookup row 'llm)) 5)
+  (check-equal? (uir-symbol-name (uir-effect-entry-scope (row-lookup row 'db)))
+                "reads=search_index"))
+
+;; @effects(...) emission: preamble + runtime guard decorator
+(let ([cst (py-parse "@effects({\"llm\": {\"max\": 5}})\ndef summarize(): pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define emitted (emit-python uir))
+  (check-not-false (string-contains? emitted "def __validate_effects(row):")
+                   "preamble defines __validate_effects")
+  (check-not-false (string-contains? emitted "@__validate_effects({\"llm\": {\"modality\": \"may\", \"max\": 5}})")
+                   "guard decorator emitted with the effect row")
+  (check-not-false (string-contains? emitted "def summarize():")
+                   "decorated function still emitted"))
 
 ;; ── Data structure literals ─────────────────────────────────────────
 

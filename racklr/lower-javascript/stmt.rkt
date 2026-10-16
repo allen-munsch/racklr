@@ -148,7 +148,7 @@
     (if fpl
         (lower-formal-params fpl tk-type tk-value)
         '()))
-  (define fn-uir (uir-fn #f params body #f))
+  (define fn-uir (uir-fn #f params body #f #f))
   (cond [is-async (uir-set! name (uir-call (uir-symbol "async-fn") (list fn-uir)))]
         [is-generator (uir-set! name (uir-call (uir-symbol "gen-fn") (list fn-uir)))]
         [else (uir-set! name fn-uir)]))

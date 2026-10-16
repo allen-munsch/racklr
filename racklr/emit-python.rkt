@@ -182,6 +182,72 @@
   (string-append spc "with " items-str ":\n"
                  (emit-body (uir-with-body uir) (+ indent 1))))
 
+;; ── Effect-row runtime guard (pure Python, no FFI) ─────────────────
+
+(define (emit-effect-entry-dict e)
+  ;; {"modality":"may","max":5,"scope":"...","ops":["query"]}
+  (let* ([base (list (format "~s: ~s" "modality"
+                             (symbol->string (uir-effect-entry-modality e))))]
+         [with-budget (if (uir-effect-entry-budget e)
+                          (cons (format "~s: ~a" "max" (uir-effect-entry-budget e)) base)
+                          base)]
+         [with-scope (if (uir-effect-entry-scope e)
+                         (cons (format "~s: ~s" "scope" (uir-symbol-name (uir-effect-entry-scope e))) with-budget)
+                         with-budget)]
+         [with-ops (if (pair? (uir-effect-entry-ops e))
+                       (cons (format "~s: [~a]" "ops"
+                                     (string-join
+                                      (map (λ (o) (format "~s" (uir-symbol-name o)))
+                                           (uir-effect-entry-ops e))
+                                      ", "))
+                             with-scope)
+                       with-scope)])
+    (string-append "{" (string-join (reverse with-ops) ", ") "}")))
+
+(define (emit-effect-row row)
+  (string-append
+   "{"
+   (string-join
+    (map (λ (e) (format "~s: ~a"
+                        (uir-symbol-name (uir-effect-entry-name e))
+                        (emit-effect-entry-dict e)))
+         (uir-effect-row-entries row))
+    ", ")
+   "}"))
+
+(define (emit-effects-guard fn indent)
+  (define spc (make-string (* indent 4) #\space))
+  (string-append spc "@__validate_effects(" (emit-effect-row (uir-fn-effects fn)) ")"))
+
+(define (effects-guard-preamble)
+  (string-append
+   "def __validate_effects(row):\n"
+   "    \"\"\"Validate an effect row and attach it to the decorated function.\n"
+   "\n"
+   "    Pure-Python runtime guard: no FFI, no shared library.\n"
+   "    \"\"\"\n"
+   "    _valid_modalities = (\"may\", \"must\", \"must-not\")\n"
+   "    for _name, _entry in row.items():\n"
+   "        _modality = _entry.get(\"modality\", \"may\")\n"
+   "        if _modality not in _valid_modalities:\n"
+   "            raise ValueError(\"invalid effect modality: %r\" % (_modality,))\n"
+   "        _budget = _entry.get(\"max\")\n"
+   "        if _budget is not None and (not isinstance(_budget, int) or _budget < 0):\n"
+   "            raise ValueError(\"invalid effect budget: %r\" % (_budget,))\n"
+   "    def _decorator(func):\n"
+   "        func.__effects__ = row\n"
+   "        return func\n"
+   "    return _decorator"))
+
+(define (program-has-effects? uir)
+  (cond
+    [(struct? uir)
+     (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
+         (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
+           (program-has-effects? f)))]
+    [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
+    [else #f]))
+
 (define (emit-funcdef uir indent)
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-fn-name uir))
@@ -201,7 +267,12 @@
   (define return-str
     (let ([rt (uir-fn-return-type uir)])
       (if rt (string-append " -> " (emit-expr rt)) "")))
+  (define guard-prefix
+    (if (uir-effect-row? (uir-fn-effects uir))
+        (string-append (emit-effects-guard uir indent) "\n")
+        ""))
   (string-append
+   guard-prefix
    spc "def " name-str "(" params-str ")" return-str ":\n"
    (emit-body (uir-fn-body uir) (+ indent 1))))
 
@@ -464,9 +535,13 @@
 ;; ── Top-level ──────────────────────────────────────────────────────
 
 (define (emit-python uir)
-  (cond [(uir-block? uir)
-         (emit-body uir 0)]
-        [else (emit-stmt uir 0)]))
+  (define body
+    (cond [(uir-block? uir)
+           (emit-body uir 0)]
+          [else (emit-stmt uir 0)]))
+  (if (program-has-effects? uir)
+      (string-append (effects-guard-preamble) "\n\n" body)
+      body))
 
 (module+ main
   (displayln "racklr/emit-python — UIR → Python3 text emitter loaded."))

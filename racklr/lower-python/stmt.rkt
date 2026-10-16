@@ -1,6 +1,7 @@
 #lang racket
 
-(require racklr/tree racklr/uir "helpers.rkt" "expr.rkt" "pattern.rkt")
+(require racklr/tree racklr/uir racklr/effects/python-annot
+         "helpers.rkt" "expr.rkt" "pattern.rkt")
 
 (provide lower-simple-stmts lower-simple-stmt lower-stmt
          lower-return find-rhs-in-children lower-expr-stmt
@@ -422,24 +423,36 @@
                 [_ (uir-symbol (format "?dec-inner-~a" (any-tree-tag inner-node)))])
               (uir-null)))
         (uir-null)))
-  (uir-decorated decorators inner))
+  ;; Attach any @effects(...) row to a decorated uir-fn's effects field.
+  (define effects-row
+    (for/or ([d (in-list decorators)])
+      (extract-effects-row d)))
+  (define inner-with-effects
+    (if (and effects-row (uir-fn? inner))
+        (struct-copy uir-fn inner [effects effects-row])
+        inner))
+  (uir-decorated decorators inner-with-effects))
 
 ;; Lower a single decorator: @name or @name(args)
 (define (lower-decorator cst tk-type tk-value)
-  ;; decorator children: [dotted_name, optional arglist]
+  ;; decorator children: [dotted_name, optional group wrapping (arglist?), NEWLINE]
   (define kids (node-children cst))
   (define name-node (if (pair? kids) (first kids) #f))
-  ;; arglist may be in a list wrapper
+  ;; The arglist sits inside a group node: group( '(' arglist? ')' ).
+  (define arg-group (if (>= (length kids) 2) (second kids) #f))
   (define arglist-node
-    (if (>= (length kids) 2)
-        (second kids)
-        #f))
+    (and arg-group
+         (eq? (any-tree-tag arg-group) 'group)
+         (let ([gk (node-children arg-group)])
+           (and (pair? gk)
+                (eq? (any-tree-tag (first gk)) 'arglist)
+                (first gk)))))
   (define name-expr
     (if name-node
         (lower-expr name-node tk-type tk-value)
         (uir-symbol "?decorator")))
   (define args
-    (if (and arglist-node (eq? (any-tree-tag arglist-node) 'arglist))
+    (if arglist-node
         (lower-arglist arglist-node tk-type tk-value)
         '()))
   (uir-call name-expr args))
@@ -606,7 +619,7 @@
   (define return-type (if return-type-node
                           (lower-expr return-type-node tk-type tk-value)
                           #f))
-  (uir-fn (if name (uir-symbol name) #f) params body return-type))
+  (uir-fn (if name (uir-symbol name) #f) params body return-type #f))
 
 (define (lower-parameters cst tk-type tk-value)
   ;; parameters: '(' typedargslist? ')'

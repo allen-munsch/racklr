@@ -576,7 +576,7 @@
                  (lower-expr (car c) tk-type tk-value)
                  #f)]
             [else #f])))
-  (uir-fn #f (or params '()) (or body-expr (uir-null)) #f))
+  (uir-fn #f (or params '()) (or body-expr (uir-null)) #f #f))
 
 ;; Lower varargslist for lambda parameters (group of vfpdef nodes)
 (define (lower-varargslist cst tk-type tk-value)
