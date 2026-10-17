@@ -5,7 +5,7 @@
          racklr/g4-parse
          racklr/gend-parser)
 
-(provide check-parse check-parse-sexp check-reject gen-and-load gen-and-load-py cleanup *last-module-path*)
+(provide check-parse check-parse-sexp check-reject gen-and-load gen-and-load-py gen-and-load-layout cleanup *last-module-path*)
 
 ;; ── Temp File Tracking ──────────────────────────────────────────────
 
@@ -42,6 +42,25 @@ Returns (values parse tokenize token-type token-value)."
 
 (define (gen-and-load-py grammar-path)
   "Like gen-and-load but enables Python INDENT/DEDENT token insertion."
+  (define grammar-cst (parse-g4-file grammar-path))
+  (define module-src (generate-parser-module grammar-cst
+                                             #:source-path grammar-path
+                                             #:indent-tokens? #t))
+  (set! gen-counter (+ gen-counter 1))
+  (define tmp-path
+    (build-path (current-directory)
+                (format "gen-tmp-~a.rkt" gen-counter)))
+  (display-to-file module-src tmp-path #:exists 'replace)
+  (set! tmp-files (cons tmp-path tmp-files))
+  (*last-module-path* tmp-path)
+  (values (dynamic-require tmp-path 'parse)
+          (dynamic-require tmp-path 'tokenize)
+          (dynamic-require tmp-path 'token-type)
+          (dynamic-require tmp-path 'token-value)))
+
+(define (gen-and-load-layout grammar-path)
+  "Like gen-and-load but enables NEWLINE/INDENT/DEDENT layout token insertion
+  (used by Koka and other indentation-sensitive languages)."
   (define grammar-cst (parse-g4-file grammar-path))
   (define module-src (generate-parser-module grammar-cst
                                              #:source-path grammar-path

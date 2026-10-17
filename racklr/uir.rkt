@@ -78,7 +78,10 @@
       (uir-pat-group? v)
       (uir-effect-row? v)
       (uir-effect-entry? v)
-      (uir-subtype? v)))
+      (uir-subtype? v)
+      (uir-effect-decl? v)
+      (uir-effect-op? v)
+      (uir-effect-handler? v)))
 
 (define (uir-tag v)
   (cond [(uir-null? v)   'null]
@@ -146,6 +149,9 @@
         [(uir-effect-row? v)     'effect-row]
         [(uir-effect-entry? v)   'effect-entry]
         [(uir-subtype? v)        'subtype]
+        [(uir-effect-decl? v)    'effect-decl]
+        [(uir-effect-op? v)      'effect-op]
+        [(uir-effect-handler? v) 'effect-handler]
         [else (error 'uir-tag "not a UIR node: ~e" v)]))
 
 ;; ── Serialization ──────────────────────────────────────────────────
@@ -281,6 +287,23 @@
                         ,(let ([s (uir-effect-entry-scope v)]) (if s (uir->sexp s) #f)))]
         [(uir-subtype? v) `(subtype ,(uir->sexp (uir-subtype-left v))
                                     ,(uir->sexp (uir-subtype-right v)))]
+        [(uir-effect-decl? v) `(effect-decl ,(uir->sexp (uir-effect-decl-name v))
+                                            ,(map uir->sexp (uir-effect-decl-ops v)))]
+        [(uir-effect-op? v) `(effect-op ,(uir->sexp (uir-effect-op-name v))
+                                        ,(map uir->sexp (uir-effect-op-params v))
+                                        ,(let ([rt (uir-effect-op-result-type v)])
+                                           (if rt (uir->sexp rt) #f)))]
+        [(uir-effect-handler? v)
+         `(effect-handler ,(let ([e (uir-effect-handler-effect v)])
+                             (if e (uir->sexp e) #f))
+                          ,(map (lambda (op)
+                                  (list (uir->sexp (car op))
+                                        (map uir->sexp (cadr op))
+                                        (uir->sexp (caddr op))))
+                                (uir-effect-handler-ops v))
+                          ,(let ([rc (uir-effect-handler-return-clause v)])
+                             (if rc (uir->sexp rc) #f))
+                          ,(uir->sexp (uir-effect-handler-body v)))]
         [else (error 'uir->sexp "not a UIR node: ~e" v)]))
 
 (define (sexp->uir s)
@@ -383,6 +406,20 @@
                        (if (eq? budget #f) #f budget)
                        (if (eq? scope #f) #f (sexp->uir scope)))]
     [`(subtype ,l ,r) (uir-subtype (sexp->uir l) (sexp->uir r))]
+    [`(effect-decl ,name ,ops)
+     (uir-effect-decl (sexp->uir name) (map sexp->uir ops))]
+    [`(effect-op ,name ,params ,result-type)
+     (uir-effect-op (sexp->uir name) (map sexp->uir params)
+                    (if (eq? result-type #f) #f (sexp->uir result-type)))]
+    [`(effect-handler ,effect ,ops ,return-clause ,body)
+     (uir-effect-handler (if (eq? effect #f) #f (sexp->uir effect))
+                         (map (lambda (op)
+                                (match op
+                                  [`(,n ,ps ,b) (list (sexp->uir n) (map sexp->uir ps) (sexp->uir b))]
+                                  [_ (error 'sexp->uir "invalid handler op: ~e" op)]))
+                              ops)
+                         (if (eq? return-clause #f) #f (sexp->uir return-clause))
+                         (sexp->uir body))]
      [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
 
 (require json)
@@ -397,7 +434,7 @@
                           'fn 'call 'let 'var 'set! 'ann-set! 'if 'block 'return 'for-each 'while 'try 'with 'await 'yield 'decorated 'get 'paren
                           'class 'method 'field 'new 'interface 'module 'import 'export 'enum 'enum-variant
                           'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr 'spread
-                          'effect-row 'effect-entry 'subtype
+                          'effect-row 'effect-entry 'subtype 'effect-decl 'effect-op 'effect-handler
                           'match 'case 'pat-literal 'pat-capture 'pat-wildcard 'pat-value 'pat-or 'pat-as
                           'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group))
 
