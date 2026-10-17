@@ -37,7 +37,8 @@
           [(and (> brace-depth 0)
                 (char=? (string-ref jsx-str pos) #\<)
                 (< (+ pos 1) len)
-                (id-start? (string-ref jsx-str (+ pos 1))))
+                (or (id-start? (string-ref jsx-str (+ pos 1)))
+                    (char=? (string-ref jsx-str (+ pos 1)) #\>)))
            (let-values ([(inner end-pos) (extract-jsx jsx-str pos)])
              (if inner
                  (let* ([inner-trimmed (string-trim inner)]

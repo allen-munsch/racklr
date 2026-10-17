@@ -173,7 +173,7 @@
                         (cond [(uir-number? v) (uir-number-value v)]
                               [(uir-jsx-expr? v) (uir-jsx-expr-content v)]
                               [else #f]))))])
-          (list (uir-text-node (format "Error ~a" (if status-code status-code "404")))))
+          (list (uir-text-node (uir-string (format "Error ~a" (if status-code status-code "404"))))))
         #f))
   
   ;; Check if self-closing or with children

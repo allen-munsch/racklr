@@ -35,11 +35,17 @@
   (define jsx-uir (make-hash))
   (when (and jsx-parser tk-type tk-value)
     ;; Lower each JSX string to UIR
+    (define emit-js (dynamic-require 'racklr/emit-javascript 'emit-javascript))
     (for ([(sentinel jsx-src) (in-hash jsx-map)])
       (define trimmed (string-trim jsx-src))
+      ;; Replace nested JSX inside {...} expression braces (e.g. items.map(x => <li/>))
+      ;; with emitted JS so the expression container stays valid JavaScript.
+      (define embedded
+        (with-handlers ([exn:fail? (lambda (e) trimmed)])
+          (preprocess-jsx-expression-embeds trimmed jsx-parser tk-type tk-value emit-js)))
       (define cst
         (with-handlers ([exn:fail? (lambda (e) #f)])
-          (jsx-parser trimmed)))
+          (jsx-parser embedded)))
       (when cst
         (define lowered
           (with-handlers ([exn:fail? (lambda (e) #f)])

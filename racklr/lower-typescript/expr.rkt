@@ -162,16 +162,44 @@
                      (cond
                        ;; Case: second kid is singleExpression wrapping [classExpr, arguments]
                        ;; e.g. new Date() → [New, singleExpression([Date, arguments]), 'none]
-                       [(and (cst-node? snd) (eq? (tag-of snd) 'singleExpression)
-                             (= (length (kids-of snd)) 2)
-                             (let ([snd-kids (kids-of snd)])
-                               (and (cst-node? (first snd-kids))
-                                    (cst-node? (second snd-kids))
-                                    (eq? (tag-of (second snd-kids)) 'arguments))))
-                        (define snd-kids (kids-of snd))
-                        (values (lower-single-expression (first snd-kids) tk-type tk-value)
-                                (lower-arguments (second snd-kids) tk-type tk-value))]
-                       [else
+                        [(and (cst-node? snd) (eq? (tag-of snd) 'singleExpression)
+                              (= (length (kids-of snd)) 2)
+                              (let ([snd-kids (kids-of snd)])
+                                (and (cst-node? (first snd-kids))
+                                     (cst-node? (second snd-kids))
+                                     (eq? (tag-of (second snd-kids)) 'arguments))))
+                         (define snd-kids (kids-of snd))
+                         (values (lower-single-expression (first snd-kids) tk-type tk-value)
+                                 (lower-arguments (second snd-kids) tk-type tk-value))]
+                        ;; Case: second kid is a parenthesized singleExpression:
+                        ;; e.g. new Error("x") → [New, singleExpression([identifierName(Error),
+                        ;;   singleExpression(OpenParen expressionSequence CloseParen)]), 'none]
+                        [(and (cst-node? snd) (eq? (tag-of snd) 'singleExpression)
+                              (= (length (kids-of snd)) 2)
+                              (let ([snd-kids (kids-of snd)])
+                                (and (cst-node? (first snd-kids))
+                                     (cst-node? (second snd-kids))
+                                     (eq? (tag-of (second snd-kids)) 'singleExpression)
+                                     (not (null? (kids-of (second snd-kids))))
+                                     (tok? (first (kids-of (second snd-kids))) tk-type)
+                                     (eq? (tk-type (first (kids-of (second snd-kids)))) 'OpenParen))))
+                         (define snd-kids (kids-of snd))
+                         (define args-es (second (kids-of (second snd-kids))))
+                         (define arg-exprs
+                           (let loop ([ks (kids-of args-es)] [acc '()])
+                             (cond [(null? ks) (reverse acc)]
+                                   [(cst-node? (car ks))
+                                    (loop (cdr ks) (cons (lower-single-expression (car ks) tk-type tk-value) acc))]
+                                   [(pair? (car ks))
+                                    (define more-args
+                                      (for/list ([g (car ks)] #:when (cst-node? g))
+                                        (define inner (second (kids-of g)))
+                                        (lower-single-expression inner tk-type tk-value)))
+                                    (loop (cdr ks) (append (reverse more-args) acc))]
+                                   [else (loop (cdr ks) acc)])))
+                         (values (lower-single-expression (first snd-kids) tk-type tk-value)
+                                 arg-exprs)]
+                        [else
                         (values (lower-single-expression snd tk-type tk-value)
                                 (let ([args-node (third kids)])
                                   (if (cst-node? args-node)

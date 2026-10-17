@@ -85,12 +85,21 @@
      (define es-seq (find-kid es 'expressionSequence))
      (define se (find-kid es-seq 'singleExpression))
      ;; singleExpression children: [identifierName(=default), singleExpression(expr)]
-     (define se-kids (filter cst-node? (kids-of se)))
-     (if (>= (length se-kids) 2)
-         (uir-call (uir-symbol "export")
-                   (list (uir-symbol "default")
-                         (lower-single-expression (second se-kids) tk-type tk-value)))
-         (uir-null))]
+      (define se-kids (filter cst-node? (kids-of se)))
+      (if (>= (length se-kids) 2)
+          (let ([expr-node (second se-kids)])
+            ;; export default function Name() {...} — preserve the name so the
+            ;; emitted declaration stays a valid JS functionDeclaration.
+            (define af (and (eq? (tag-of expr-node) 'singleExpression)
+                            (find-kid expr-node 'anonymousFunction)))
+            (define fd (and af (find-kid af 'functionDeclaration)))
+            (define fd-ident (and fd (find-kid fd 'identifier)))
+            (uir-call (uir-symbol "export")
+                      (list (uir-symbol "default")
+                            (if fd-ident
+                                (lower-fn-decl fd tk-type tk-value)
+                                (lower-single-expression expr-node tk-type tk-value)))))
+          (uir-null))]
 
     ;; export const/let/var/function/class declaration
     [else
@@ -177,7 +186,22 @@
 
 (define (lower-expr-stmt node tk-type tk-value)
   (define es (find-kid node 'expressionSequence))
-  (lower-expression-sequence es tk-type tk-value))
+  (define se (and es (find-kid es 'singleExpression)))
+  ;; ASI: with no trailing semicolon the grammar parses `return <expr>` as an
+  ;; expressionStatement whose singleExpression is [identifierName(return),
+  ;; singleExpression(expr)] — the keyword becomes a "callee". Recover the
+  ;; intended returnStatement here.
+  (define (return-callee? k)
+    (and (cst-node? k) (eq? (tag-of k) 'identifierName)
+         (let* ([rw (find-kid k 'reservedWord)]
+                [kw (and rw (find-kid rw 'keyword))]
+                [tok (and kw (first (kids-of kw)))])
+           (and (tok? tok tk-type) (eq? (tk-type tok) 'Return)))))
+  (define node-kids (and se (filter cst-node? (kids-of se))))
+  (if (and node-kids (= (length node-kids) 2)
+           (return-callee? (first node-kids)))
+      (uir-return (lower-single-expression (second node-kids) tk-type tk-value))
+      (lower-expression-sequence es tk-type tk-value)))
 
 (define (lower-var-stmt node tk-type tk-value)
   (define vdl (find-kid node 'variableDeclarationList))
@@ -579,15 +603,16 @@
     (for ([k (kids-of group)])
       (when (cst-node? k)
         (case (tag-of k)
-          [(catchProduction)
-           (define catch-group (find-kid k 'group))
-           (when catch-group
-             (define assignable (find-kid catch-group 'assignable))
-             (when assignable
-               (define ident (find-kid assignable 'identifier))
-               (when ident
-                 (set! catch-var (uir-var (uir-symbol (tk-value (first (kids-of ident)))))))))
-           (set! catch-body (lower-block (find-kid k 'block) tk-type tk-value))]
+           [(catchProduction)
+            (define catch-group (find-kid k 'group))
+            (when catch-group
+              (define ident
+                (let ([assignable (find-kid catch-group 'assignable)])
+                  (or (and assignable (find-kid assignable 'identifier))
+                      (find-kid catch-group 'identifier))))
+              (when ident
+                (set! catch-var (uir-var (uir-symbol (tk-value (first (kids-of ident))))))))
+            (set! catch-body (lower-block (find-kid k 'block) tk-type tk-value))]
           [(finallyProduction)
            (set! finally-body (lower-block (find-kid k 'block) tk-type tk-value))]))))
   (uir-call (uir-symbol "try") (list try-body catch-var catch-body finally-body)))

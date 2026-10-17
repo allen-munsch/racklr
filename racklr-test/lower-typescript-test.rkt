@@ -155,6 +155,33 @@
   (check-true (string-contains? emitted "extends Bar"))
   (check-true (string-contains? emitted "baz(x)")))
 
+;; ── drg-b876 regressions ────────────────────────────────────────────
+
+;; new X(args) must not gain a spurious trailing call
+(let-values ([(uir emitted) (check-ts "new Error(\"x\");")])
+  (check-true (string-contains? emitted "new Error(\"x\")"))
+  (check-false (string-contains? emitted "new Error(\"x\")()")))
+
+;; typed catch binding must lower to a bare catch (err)
+(let-values ([(uir emitted) (check-ts "try { a(); } catch (err: any) { b(); }")])
+  (check-true (string-contains? emitted "catch (err)"))
+  (check-false (string-contains? emitted "catch (null)")))
+
+;; export default function must preserve its name
+(let-values ([(uir emitted) (check-ts "export default function Post() { return 1; }")])
+  (check-true (string-contains? emitted "export default function Post()"))
+  (check-false (string-contains? emitted "export default function()")))
+
+;; return with no trailing semicolon (parenthesized or object) must not
+;; misparse as an expression statement with a `null` callee
+(let-values ([(uir emitted) (check-ts "function f() { return (\n x\n ) }")])
+  (check-true (string-contains? emitted "return x"))
+  (check-false (string-contains? emitted "null(")))
+
+(let-values ([(uir emitted) (check-ts "function f() { return {\n a: 1\n } }")])
+  (check-true (string-contains? emitted "return { a: 1 }"))
+  (check-false (string-contains? emitted "null(")))
+
 ;; ── Clean up temp files ─────────────────────────────────────────────
 
 (cleanup)
