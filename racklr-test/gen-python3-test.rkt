@@ -71,6 +71,12 @@
   (check-equal? (length tks) 3)
   (check-equal? (tok-type (first tks)) 'STRING))
 
+;; String containing the letter f: the \f form-feed escape in the negated
+;; string class must not leak a literal f into the match set.
+(let ([tks (py-tokenize "\"the quick brown fox\"\n")])
+  (check-equal? (length tks) 3 "f-containing string should be one STRING token")
+  (check-equal? (tok-type (first tks)) 'STRING))
+
 ;; Operators
 (let ([tks (py-tokenize "=\n")])
   (check-equal? (length tks) 3)

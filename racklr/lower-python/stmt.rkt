@@ -599,9 +599,11 @@
   (define name (for/or ([t toks] #:when (eq? (first t) 'NAME)) (second t)))
   (define kids (node-children cst))
   ;; funcdef: 'def' NAME parameters ('->' test)? ':' suite
-  ;; But node-children gives: name, parameters, (optional group with '->' test), suite
+  ;; node-children gives: name, parameters, (optional group with '->' test),
+  ;; then either 'suite' (one-line body) or 'block' (multiline body).
   (define params-node (findf (λ (k) (eq? (any-tree-tag k) 'parameters)) kids))
-  (define suite-node (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids))
+  (define suite-node (or (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids)
+                         (findf (λ (k) (eq? (any-tree-tag k) 'block)) kids)))
   ;; return type annotation: group node containing ARROW token + test
   (define return-type-node
     (for/or ([k kids])
@@ -615,7 +617,10 @@
                            (eq? (tk-type rc) 'ARROW))))
                   (first gk))))))
   (define params (if params-node (lower-parameters params-node tk-type tk-value) '()))
-  (define body (if suite-node (lower-suite suite-node tk-type tk-value) (uir-null)))
+  (define body
+    (cond [(not suite-node) (uir-null)]
+          [(eq? (any-tree-tag suite-node) 'block) (lower-block suite-node tk-type tk-value)]
+          [else (lower-suite suite-node tk-type tk-value)]))
   (define return-type (if return-type-node
                           (lower-expr return-type-node tk-type tk-value)
                           #f))

@@ -253,8 +253,14 @@
       (lambda (matched hex-str)
         (define code (string->number hex-str 16))
         (string (integer->char code)))))
-  ;; Then handle \\t \\n \\r
-  (define s2 (regexp-replace* #rx"\\\\t" (regexp-replace* #rx"\\\\n" (regexp-replace* #rx"\\\\r" s1 "\r") "\n") "\t"))
+  ;; Then handle \\t \\n \\r \\f
+  (define s2 (regexp-replace* #rx"\\\\t"
+               (regexp-replace* #rx"\\\\n"
+                (regexp-replace* #rx"\\\\r"
+                 (regexp-replace* #rx"\\\\f" s1 "\f")
+                 "\r")
+                "\n")
+               "\t"))
   ;; Convert \\- (escaped hyphen) to a bare - at start of class (right after [).
   ;; In Racket cc-match, - in the middle of a class is a range operator.
   ;; By moving to position 1, it is always literal.
