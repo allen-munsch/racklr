@@ -55,14 +55,22 @@
 
 ;; ── callee classification ───────────────────────────────────────────
 
-;; Leftmost root name of a (possibly dotted) callee expression, as a symbol.
+;; Leftmost root name of a (possibly dotted/namespaced) callee expression,
+;; as a symbol. Namespace-qualified names split on '/': "llm/query" → llm.
 (define (dotted-root c)
   (let loop ([c c])
     (cond
       [(uir-get? c) (loop (uir-get-base c))]
-      [(uir-var? c) (string->symbol (uir-symbol-name (uir-var-name c)))]
-      [(uir-symbol? c) (string->symbol (uir-symbol-name c))]
+      [(uir-var? c) (symbol-root (uir-symbol-name (uir-var-name c)))]
+      [(uir-symbol? c) (symbol-root (uir-symbol-name c))]
       [else #f])))
+
+;; Root of a (possibly namespace-qualified) symbol name string.
+(define (symbol-root name)
+  (let loop ([i 0])
+    (cond [(>= i (string-length name)) (string->symbol name)]
+          [(char=? (string-ref name i) #\/) (string->symbol (substring name 0 i))]
+          [else (loop (add1 i))])))
 
 ;; Does a dotted chain contain a `uir-get` whose field is `field-name`?
 (define (dotted-has-field? c field-name)

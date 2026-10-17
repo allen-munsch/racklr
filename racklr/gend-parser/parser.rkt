@@ -1,6 +1,7 @@
 #lang racket
 
-(require racklr/tree)
+(require racklr/tree
+         "lexer.rkt")
 
 (provide detect-left-recursion
          gen-parser-helpers
@@ -153,7 +154,7 @@
   (define tag (any-tree-tag e))
   (cond
     [(eq? tag 'literal)
-     (format "(expect-lit tks ~a ~s)" pos-ref (any-tree-text e))]
+     (format "(expect-lit tks ~a ~s)" pos-ref (unescape-g4-literal (any-tree-text e)))]
     [(eq? tag 'token-ref)
      (format "(expect-tok tks ~a '~a)" pos-ref (any-tree-text e))]
     [(eq? tag 'rule-ref)
@@ -199,7 +200,7 @@
     (define tag (any-tree-tag e))
     (cond
       [(eq? tag 'literal)
-       (format "(expect-lit tks ~a ~s)" pos-ref (any-tree-text e))]
+       (format "(expect-lit tks ~a ~s)" pos-ref (unescape-g4-literal (any-tree-text e)))]
       [(eq? tag 'token-ref)
        (format "(expect-tok tks ~a '~a)" pos-ref (any-tree-text e))]
       [(eq? tag 'rule-ref)
@@ -251,7 +252,7 @@
 (define (gen-parser-single elem)
   (define tag (any-tree-tag elem))
   (cond
-    [(eq? tag 'literal)  (format "(expect-lit t p ~s)" (any-tree-text elem))]
+    [(eq? tag 'literal)  (format "(expect-lit t p ~s)" (unescape-g4-literal (any-tree-text elem)))]
     [(eq? tag 'token-ref) (format "(expect-tok t p '~a)" (any-tree-text elem))]
     [(eq? tag 'rule-ref)  (format "(parse-~a t p)" (any-tree-text elem))]
     [(eq? tag 'group)
