@@ -124,7 +124,7 @@ Run all tests: `raco test racklr-test/*.rkt`
 
 ```bash
 # Clone the repo
-git clone https://github.com/allen-munsch/racklr.git
+git clone https://github.com/racklr-dev/racklr.git
 cd racklr
 
 # Install the package (linked mode)

@@ -4,6 +4,9 @@
 ;; inference over namespace-qualified symbols, and metadata emission.
 
 (require rackunit
+         racket/system
+         racket/port
+         racket/file
          racklr/tree
          racklr/uir
          racklr/gen-test
@@ -84,5 +87,41 @@
   (check-true (string-contains? emitted ":__effects__") "effects metadata emitted")
   (check-true (string-contains? emitted ":llm") "llm entry emitted")
   (check-true (string-contains? emitted ":max 5") "budget emitted"))
+
+;; ── 5. Jolt executes emitted Clojure and preserves :__effects__ ──────
+;; The emitter must place the row where defn actually keeps it: the
+;; attr-map slot. The outer-^ shape is dropped by the reader, so Jolt
+;; would report no :__effects__ on the var.
+
+(define (run-jolt clj-source)
+  ;; Returns (list exit-code stdout stderr), or #f when jolt is unavailable.
+  (if (find-executable-path "jolt" #f)
+      (let ([tmp (make-temporary-file "racklr-clj-~a.clj")]
+            [out (make-temporary-file "racklr-clj-out-~a")])
+        (call-with-output-file tmp #:exists 'truncate
+          (λ (o) (display clj-source o)))
+        (define code
+          (with-handlers ([exn:fail? (λ (e) #f)])
+            (system/exit-code (format "jolt run ~a > ~a 2>&1" tmp out))))
+        (define stdout (if (file-exists? out) (file->string out) ""))
+        (delete-file tmp)
+        (delete-file out)
+        (and code (list code stdout "")))
+      #f))
+
+(define jolt-result
+  (run-jolt (string-append
+             (emit-clojure (lower "^{:effects {:llm {:max 5}}} (defn summarize [x] (llm/query x))"))
+             "\n(println (:__effects__ (meta (var summarize))))\n")))
+
+(if jolt-result
+    (let ([code (first jolt-result)]
+          [stdout (second jolt-result)]
+          [stderr (third jolt-result)])
+      (check-equal? code 0 (format "jolt exit code (stderr: ~a)" stderr))
+      (check-true (string-contains? stdout ":llm") "jolt reads :llm effect")
+      (check-true (string-contains? stdout ":max 5") "jolt reads :max budget")
+      (check-true (string-contains? stdout ":modality may") "jolt reads :modality may"))
+    (displayln "jolt not found; skipping Jolt execution checks"))
 
 (displayln "All Clojure effects tests passed.")
