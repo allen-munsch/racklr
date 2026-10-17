@@ -305,6 +305,13 @@
   (check-true (string-contains? emitted "b"))
   (check-true (string-contains? emitted "+")))
 
+;; Arrow function: block body (previously crashed: the { ... } body was fed
+;; to the single-expression lowerer as the OpenBrace token)
+(let-values ([(uir emitted) (check-js "var f = (x) => { return x; };")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "=>"))
+  (check-true (string-contains? emitted "return")))
+
 ;; Function expression: no params
 (let-values ([(uir emitted) (check-js "var f = function() { return 1; };")])
   (check-equal? (uir-tag uir) 'block)
