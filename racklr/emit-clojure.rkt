@@ -11,7 +11,7 @@
 ;; ── Effect-row rendering (Clojure keyword-keyed map) ────────────────
 
 (define (emit-effect-entry e)
-  (define parts (list (format ":modality ~a" (symbol->string (uir-effect-entry-modality e)))))
+  (define parts (list (format ":modality :~a" (symbol->string (uir-effect-entry-modality e)))))
   (define with-budget
     (if (uir-effect-entry-budget e)
         (cons (format ":max ~a" (uir-effect-entry-budget e)) parts)
@@ -138,9 +138,11 @@
   (define body-str (emit-body (uir-fn-body uir)))
   (cond
     [(and (uir-effect-row? (uir-fn-effects uir)) (uir-symbol? name))
-     ;; attach the inferred/annotated row as :__effects__ metadata on the defn
-     (string-append "^{:__effects__ " (emit-effect-row (uir-fn-effects uir)) "}"
-                    " (defn " (uir-symbol-name name) " [" params-str "] " body-str ")")]
+     ;; attach the row in the defn attr-map slot: the outer-^ shape is
+     ;; dropped by the reader, so Jolt (and Clojure) keep only this one.
+     (string-append "(defn " (uir-symbol-name name)
+                    " {:__effects__ " (emit-effect-row (uir-fn-effects uir)) "}"
+                    " [" params-str "] " body-str ")")]
     [(uir-symbol? name)
      (string-append "(defn " (uir-symbol-name name) " [" params-str "] " body-str ")")]
     [else

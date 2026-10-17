@@ -2,17 +2,18 @@
 
 Racklr is a parser generator and universal intermediate representation (UIR) toolkit built in Racket. It reads ANTLR4 grammar definitions (.g4 files), generates working lexer+parser modules, parses source text into Concrete Syntax Trees (CSTs), lowers CSTs to a language-independent UIR, and emits target code from UIR nodes.
 
-**Experimental release — Python 3 and JavaScript round-trips are working. Cross-compilation and additional languages are planned for future releases.**
+**Experimental release. Six front ends parse, lower, and emit through the shared UIR: JSON, Python, JavaScript, TypeScript, TSX/React, and Clojure. Effect-row annotation, inference, and contract checking are implemented; runtime enforcement is planned.**
 
 ## Status
 
-| Language | Parser | Lowering (CST → UIR) | Emit (UIR → source) | Round-trip |
-|----------|--------|---------------------|----------------------|------------|
-| JSON | ✓ | ✓ | ✓ | ✓ |
-| Python 3 | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ |
+- **JSON:** parser, lowering, and emit; round-trips.
+- **Python 3:** parser, lowering, and emit; round-trips.
+- **JavaScript:** parser, lowering, and emit; round-trips.
+- **TypeScript:** parser and lowering; emits through the JavaScript emitter (TS → JS, type annotations drop at emit).
+- **TSX / React:** parser and lowering; emits through the JSX/HTML emitters (hooks lower to static HTML + vanilla JS).
+- **Clojure:** parser, lowering, and emit; round-trips and carries effects metadata.
 
-**Planned (not yet implemented):** Rust, TypeScript, HTML, CSS, React/JSX, Svelte, cross-compilation pipeline.
+**Planned (not yet implemented):** Rust, HTML/CSS, Svelte, arbitrary cross-compilation between front ends, and the effect runtime-enforcement layer.
 
 ## Architecture
 
