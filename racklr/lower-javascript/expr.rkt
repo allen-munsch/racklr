@@ -68,9 +68,13 @@
                 (if (and (cst-node? args-node) (eq? (tag-of args-node) 'arguments))
                     (uir-call callee (lower-arguments args-node tk-type tk-value))
                     (uir-null))])]
-        [(= (length kids) 3)
-         (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
-                (cond
+         [(= (length kids) 3)
+          (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'OpenParen)
+                      (tok? (third kids) tk-type) (eq? (tk-type (third kids)) 'CloseParen))
+                 ;; Parenthesized expression: ( expressionSequence )
+                 (uir-paren (lower-expression-sequence (second kids) tk-type tk-value))]
+                [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
+                 (cond
                   ;; new.target
                   [(and (tok? (second kids) tk-type) (eq? (tk-type (second kids)) 'Dot))
                    (define target (lower-single-expression (third kids) tk-type tk-value))

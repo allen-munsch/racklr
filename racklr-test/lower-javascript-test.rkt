@@ -312,6 +312,13 @@
   (check-true (string-contains? emitted "=>"))
   (check-true (string-contains? emitted "return")))
 
+;; Parenthesized IIFE (previously crashed: the lowerer recursed into the
+;; OpenParen token of `( function(){...} )` and violated cst-node-children)
+(let-values ([(uir emitted) (check-js "(function(){ return 1; })();")])
+  (check-equal? (uir-tag uir) 'block)
+  (check-true (string-contains? emitted "function"))
+  (check-true (string-contains? emitted "return")))
+
 ;; Function expression: no params
 (let-values ([(uir emitted) (check-js "var f = function() { return 1; };")])
   (check-equal? (uir-tag uir) 'block)
