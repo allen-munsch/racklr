@@ -13,7 +13,7 @@
          racklr/emit-koka)
 
 (define-values (koka-parse koka-tokenize koka-tok-type koka-tok-value)
-  (gen-and-load-layout "../grammars-v4/koka/Koka.g4"))
+  (gen-and-load-layout "../grammars/koka/Koka.g4"))
 
 (define (check-koka input-str expected-emitted)
   (define cst (koka-parse input-str))

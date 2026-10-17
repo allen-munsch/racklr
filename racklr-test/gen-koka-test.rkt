@@ -9,7 +9,7 @@
          racklr/gend-parser)
 
 (define-values (koka-parse koka-tokenize koka-tok-type koka-tok-value)
-  (gen-and-load-layout "../grammars-v4/koka/Koka.g4"))
+  (gen-and-load-layout "../grammars/koka/Koka.g4"))
 
 ;; ── Tokenizer smoke tests ───────────────────────────────────────────
 
