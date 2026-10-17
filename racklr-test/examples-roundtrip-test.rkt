@@ -103,7 +103,7 @@
   #t)
 
 (define (lower-ts-src src)
-  (ts-lower:lower-program (assert-parsed (ts-parse src)) ts-tok-type ts-tok-value))
+  (ts-lower:lower-program (assert-parsed (ts-parse (preprocess-imports src))) ts-tok-type ts-tok-value))
 
 (define (pipeline-ts src)
   (define uir (lower-ts-src src))
