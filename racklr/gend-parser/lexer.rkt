@@ -12,7 +12,8 @@
          gen-header
          gen-match-helpers
          gen-lexer-matchers
-         gen-tokenizer)
+         gen-tokenizer
+         unescape-g4-literal)
 
 ;; ── Helpers for tokenVocab ─────────────────────────────────────────
 

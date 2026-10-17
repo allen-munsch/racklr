@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>racklr: grammar in, compiler out</title>
+<style>
+  :root {
+    --dark: #0c0e14;
+    --dark-2: #131722;
+    --ink: #13141a;
+    --ink-soft: #5b606e;
+    --bg: #f6f7f9;
+    --bg-2: #eceef3;
+    --rule: #e2e5ec;
+    --acid: #d4f73f;
+    --indigo: #6f6bff;
+    --teal: #14b8a6;
+    --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", Charter, "Bitstream Charter", Georgia, "Times New Roman", serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  a { color: var(--indigo); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Hero ─────────────────────────────────────────────── */
+
+  .hero {
+    background:
+      radial-gradient(60rem 30rem at 80% -10%, rgba(111,107,255,0.22), transparent 60%),
+      radial-gradient(40rem 24rem at 10% 10%, rgba(20,184,166,0.14), transparent 55%),
+      var(--dark);
+    color: #f2f3f7;
+    padding: 1.25rem 0 4.5rem;
+    overflow: hidden;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3.5rem;
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -0.01em;
+    color: #f2f3f7;
+  }
+  .logo .mark { color: var(--acid); }
+
+  .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+  .nav-links a { color: #b8bdc9; font-size: 0.92rem; font-family: var(--mono); }
+  .nav-links a:hover { color: #f2f3f7; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--acid);
+    margin: 0 0 1.1rem;
+  }
+
+  h1 {
+    font-size: clamp(3rem, 8.5vw, 6rem);
+    line-height: 0.95;
+    margin: 0 0 1.4rem;
+    font-weight: 800;
+    letter-spacing: -0.035em;
+  }
+  h1 .dim { color: #8a8f9e; font-weight: 600; }
+
+  .lede {
+    font-size: 1.28rem;
+    line-height: 1.42;
+    color: #c6cbd8;
+    max-width: 40rem;
+    margin: 0 0 1.25rem;
+  }
+  .lede strong { color: #f2f3f7; }
+
+  .for-whom {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    color: #8a8f9e;
+    margin: 0 0 2rem;
+  }
+  .for-whom b { color: #c6cbd8; font-weight: 600; }
+
+  /* ── The transform (vertical pipeline) ────────────────── */
+
+  .transform {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .panel {
+    background: var(--dark-2);
+    border: 1px solid #262c3d;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .panel .cap {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: #8a8f9e;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #1d2331;
+  }
+  .panel.in .cap { color: var(--teal); }
+  .panel.mid .cap { color: #a5b4fc; }
+  .panel.out .cap { color: var(--acid); }
+
+  .panel pre {
+    margin: 0;
+    padding: 1rem 1.1rem 1.2rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: #e7eaf2;
+    overflow-x: auto;
+  }
+  .panel .kw { color: #a5b4fc; }
+  .panel .fn { color: #5eead4; }
+  .panel .s  { color: #fbbf24; }
+  .panel .c  { color: #7a8196; }
+
+  .arrow {
+    display: flex;
+    justify-content: center;
+    color: var(--acid);
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0.15rem 0;
+    animation: nudge 2.4s ease-in-out infinite;
+  }
+
+  @keyframes nudge {
+    0%, 100% { transform: translateY(0); opacity: 0.75; }
+    50% { transform: translateY(4px); opacity: 1; }
+  }
+
+  .transform-note {
+    text-align: center;
+    color: #8a8f9e;
+    font-size: 0.9rem;
+    margin: 0 0 2.5rem;
+  }
+  .transform-note code { color: #c6cbd8; font-family: var(--mono); }
+
+  .lang-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0 0 1rem;
+  }
+
+  .tab {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    color: #8a8f9e;
+    background: transparent;
+    border: 1px solid #262c3d;
+    border-radius: 999px;
+    padding: 0.32rem 0.75rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .tab:hover { color: #e7eaf2; border-color: #4a5164; }
+  .tab.active {
+    color: #13160a;
+    background: var(--acid);
+    border-color: var(--acid);
+    font-weight: 600;
+  }
+
+  .panel pre.fade { animation: fadeIn 0.18s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .ctas { display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 0 0 3rem; }
+
+  .btn {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.92rem;
+    padding: 0.7rem 1.2rem;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    text-decoration: none;
+  }
+  .btn:hover { text-decoration: none; }
+  .btn.primary { background: var(--acid); color: #13160a; font-weight: 600; }
+  .btn.primary:hover { background: #c4e62f; }
+  .btn.ghost { border-color: #333a4d; color: #e7eaf2; }
+  .btn.ghost:hover { border-color: #6f6bff; color: #fff; }
+
+  /* ── Sections ─────────────────────────────────────────── */
+
+  main { padding: 4.5rem 0 1rem; }
+
+  section { margin-bottom: 4.5rem; }
+
+  .section-head {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--indigo);
+    margin: 0 0 1.1rem;
+  }
+
+  h2 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    line-height: 1.08;
+    margin: 0 0 1rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .lede-light {
+    font-size: 1.2rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    max-width: 44rem;
+    margin: 0 0 1.5rem;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+    margin-top: 2rem;
+  }
+
+  .fact {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 1.4rem 1.3rem;
+  }
+
+  .fact .t {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--ink);
+    display: block;
+    line-height: 1.1;
+    margin-bottom: 0.5rem;
+  }
+  .fact .t span { color: var(--indigo); }
+  .fact p { margin: 0; color: var(--ink-soft); font-size: 0.95rem; }
+
+  pre.code {
+    background: var(--dark);
+    color: #e7eaf2;
+    border-radius: 12px;
+    padding: 1.2rem 1.35rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin: 1.5rem 0 1.75rem;
+  }
+  pre.code .c { color: #7a8196; }
+  pre.code .kw { color: #a5b4fc; }
+  pre.code .s { color: #fbbf24; }
+
+  ul { margin: 0 0 1.5rem; padding-left: 1.4rem; }
+  li { margin-bottom: 0.6rem; }
+  li strong { color: var(--ink); }
+
+  /* ── Footer ───────────────────────────────────────────── */
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 2rem 0 3rem;
+    color: var(--ink-soft);
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  /* ── Dark mode ────────────────────────────────────────── */
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101318;
+      --bg-2: #171b24;
+      --ink: #eef0f5;
+      --ink-soft: #a3a9b8;
+      --rule: #262c3a;
+      --indigo: #a5b4fc;
+    }
+    .hero { border-bottom: 1px solid #1d2331; }
+    .fact { background: var(--bg-2); border-color: var(--rule); }
+    pre.code { background: #0b0d13; }
+  }
+
+  @media (max-width: 720px) {
+    .facts { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <nav>
+      <span class="logo">rack<span class="mark">lr</span></span>
+      <div class="nav-links">
+        <a href="how-it-works.html">How it works</a>
+        <a href="https://github.com/allen-munsch/racklr">GitHub</a>
+      </div>
+    </nav>
+
+    <p class="eyebrow">A transpiler toolkit with a trust layer</p>
+    <h1>Grammar in,<br><span class="dim">compiler out.</span></h1>
+    <p class="lede">
+      Write a grammar and racklr generates the front end. Annotate what your code may do and it
+      <strong>checks the contract when it compiles, with a runtime guard as backstop</strong>. One
+      shared tree, and a boundary you can read.
+    </p>
+    <p class="for-whom">For <b>people writing compilers</b>, and for <b>teams running generated code</b>.</p>
+
+    <div class="ctas">
+      <a class="btn primary" href="https://github.com/allen-munsch/racklr">View on GitHub</a>
+      <a class="btn ghost" href="how-it-works.html">How it works</a>
+    </div>
+
+    <div class="lang-tabs" id="lang-tabs">
+      <button class="tab active" data-lang="python">Python</button>
+      <button class="tab" data-lang="javascript">JavaScript</button>
+      <button class="tab" data-lang="typescript">TypeScript</button>
+      <button class="tab" data-lang="tsx">TSX / React</button>
+      <button class="tab" data-lang="clojure">Clojure</button>
+      <button class="tab" data-lang="json">JSON</button>
+    </div>
+
+    <div class="transform" id="lang-transform">
+      <div class="panel in">
+        <div class="cap" id="src-cap">Python in</div>
+        <pre id="src-code"><span class="kw">def</span> <span class="fn">greet</span>(name):
+    <span class="kw">return</span> <span class="s">"hello "</span> + name</pre>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="panel mid">
+        <div class="cap">Shared tree (UIR)</div>
+        <pre id="mid-code"><span class="kw">uir-fn</span>(name=greet, params=[name],
+  body=<span class="fn">call</span>(+, <span class="s">"hello "</span>, name))</pre>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="panel out">
+        <div class="cap" id="out-cap">JavaScript out</div>
+        <pre id="out-code"><span class="kw">function</span> <span class="fn">greet</span>(name) {
+  <span class="kw">return</span> <span class="s">"hello "</span> + name;
+}</pre>
+      </div>
+    </div>
+    <p class="transform-note" id="transform-note">Python in, JavaScript out. The same <code>uir-fn</code> sits in the middle.</p>
+
+    <p class="eyebrow">From framework to static files</p>
+    <div class="lang-tabs" id="react-tabs">
+      <button class="tab active" data-example="hooks">Hooks</button>
+      <button class="tab" data-example="data">Data fetching</button>
+      <button class="tab" data-example="routing">Routing</button>
+      <button class="tab" data-example="head">Head / SEO</button>
+    </div>
+
+    <div class="transform" id="react-transform">
+      <div class="panel in">
+        <div class="cap">Next.js / React in</div>
+        <pre id="r-src-code"><span class="kw">export default function</span> <span class="fn">Counter</span>() {
+  <span class="kw">const</span> [n, setN] = <span class="fn">useState</span>(0);
+  <span class="fn">useEffect</span>(() =&gt; {
+    document.title = <span class="s">"count "</span> + n;
+  }, [n]);
+  <span class="kw">return</span> &lt;button onClick={() =&gt; setN(n + 1)}&gt;{n}&lt;/button&gt;;
+}</pre>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="panel mid">
+        <div class="cap">Shared tree (UIR)</div>
+        <pre id="r-mid-code"><span class="kw">uir-fn</span>(Counter, [])
+  state: n &lt;- <span class="fn">useState</span>(0)
+  effect: set document.title
+  body: <span class="fn">uir-element</span>(button, { onClick }, n)</pre>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="panel out">
+        <div class="cap">Vanilla HTML + JS out</div>
+        <pre id="r-out-code">&lt;button id="count"&gt;0&lt;/button&gt;
+&lt;script&gt;
+  <span class="kw">let</span> n = 0;
+  <span class="kw">const</span> btn = document.getElementById(<span class="s">"count"</span>);
+  btn.onclick = () =&gt; {
+    n += 1;
+    btn.textContent = n;
+    document.title = <span class="s">"count "</span> + n;
+  };
+&lt;/script&gt;</pre>
+      </div>
+    </div>
+    <p class="transform-note" id="react-note">Hooks, state, and effects become plain DOM listeners and variables.</p>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section>
+    <p class="section-head">Effect rows</p>
+    <h2>Side effects, type-checked.</h2>
+    <p class="lede-light">
+      Generated code is a black box: you can read what it says, but not what it will do. An effect
+      row puts a readable boundary around it. Annotate a function with the capabilities it may use,
+      and the compiler checks that its calls stay inside the row at compile time, with a runtime
+      guard as a backstop.
+    </p>
+    <pre class="code"><span class="c">;; this function may call the LLM, at most 5 times</span>
+<span class="kw">^{:effects</span> {:llm {:max 5}}}
+(<span class="kw">defn</span> summarize [q] (llm/query q))</pre>
+    <pre class="code"><span class="c">;; declared with no effects, then it calls the LLM</span>
+<span class="kw">^{:effects</span> {}}
+(<span class="kw">defn</span> summarize [q] (llm/query q))
+<span class="c">;; error: llm/query exceeds the declared effect row</span></pre>
+    <div class="facts">
+      <div class="fact">
+        <span class="t">Formal <span>verification</span></span>
+        <p>Proves properties outright, and often costs more than teams can justify.</p>
+      </div>
+      <div class="fact">
+        <span class="t">Ad hoc <span>specs</span></span>
+        <p>Cheap and everywhere, but they stop at the surface and drift from the code.</p>
+      </div>
+      <div class="fact">
+        <span class="t">Effect <span>rows</span></span>
+        <p>The middle ground. A checked boundary: what it may do, how often, in what scope.</p>
+      </div>
+    </div>
+    <p class="lede-light" style="margin-top:1.75rem;">
+      The box stays dark. The boundary is what you read and verify.
+    </p>
+  </section>
+
+  <section>
+    <p class="section-head">The foundation</p>
+    <h2>One tree, every language.</h2>
+    <p class="lede-light">
+      Every front end lowers to the same 40+ node types. A Clojure function and a Python function
+      are different on the surface and identical underneath. Adding a language is two small passes,
+      not a rewrite.
+    </p>
+    <div class="facts">
+      <div class="fact">
+        <span class="t">Grammar <span>&rarr;</span> parser</span>
+        <p>A working lexer and parser module, generated straight from the spec.</p>
+      </div>
+      <div class="fact">
+        <span class="t">40+ <span>nodes</span></span>
+        <p>The shared intermediate representation every language meets in the middle.</p>
+      </div>
+      <div class="fact">
+        <span class="t">6 <span>front ends</span></span>
+        <p>Parsing, lowering, and emitting through UIR today.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="section-head">Who it's for</p>
+    <h2>Two jobs, one tool.</h2>
+    <p class="lede-light">
+      If you build compilers, a grammar becomes a working front end instead of a hand-written parser.
+      If you run generated code, an effect row becomes a readable boundary on what that code may do.
+      The two meet on the shared tree.
+    </p>
+  </section>
+
+  <section>
+    <p class="section-head">What's next</p>
+    <h2>Six front ends today. More when you join in.</h2>
+    <p class="lede-light">
+      Six languages parse, lower, and emit through UIR today: JSON, Python, JavaScript, TypeScript,
+      TSX / React, and Clojure. Early days. The foundation and the effect layer are the pieces that
+      exist now; the rest is open ground.
+    </p>
+    <ul>
+      <li>
+        <strong>Cross-compilation between any two front ends.</strong> Python to JavaScript,
+        TypeScript to Python, Clojure to anything. One shared tree makes each pair two small passes;
+        the roadmap is the full, tested matrix.
+      </li>
+      <li>
+        <strong>Rust.</strong> A parser, a lowering pass, and an emitter, with a design goal of
+        Rust's ownership rules feeding into the effect layer.
+      </li>
+      <li>
+        <strong>HTML and CSS.</strong> A second-tier lowering so markup and styles join the same
+        tree as the code.
+      </li>
+      <li>
+        <strong>More frameworks.</strong> Svelte, Vue, and server components, following the TSX path
+        that already turns hooks into static files.
+      </li>
+      <li>
+        <strong>A language registry.</strong> Drop in a grammar and a lowering pass, and once it
+        exists every emitter becomes a target in principle.
+      </li>
+    </ul>
+    <p>
+      If one of these is close to your heart, or your favorite language is missing, the door is open.
+      A front end is a grammar, a lowering pass, and an emitter. Everything else is already shared.
+      <a href="https://github.com/allen-munsch/racklr">Contribute on GitHub</a>.
+    </p>
+  </section>
+
+  <section>
+    <p class="section-head">Try it</p>
+    <h2>A library, not a service.</h2>
+    <p class="lede-light">
+      It's Racket. Install it, then run the suites or wire a grammar through the pipeline yourself.
+    </p>
+    <pre class="code">git clone https://github.com/allen-munsch/racklr
+cd racklr
+raco pkg install --link .      <span class="c"># link the package</span>
+raco test racklr-test/*.rkt   <span class="c"># run the suites</span></pre>
+    <p>
+      Why Racket? Macros and a parser ecosystem made it feasible to treat a grammar as data and
+      generate a parser from it. That generation is the lever the rest of the toolchain rests on.
+    </p>
+  </section>
+
+</main>
+
+<footer class="wrap">
+  <span>racklr is a Racket project, open source under GPL-3.0-or-later.</span>
+  <span>Grammars vendored from the <a href="https://github.com/antlr/grammars-v4">ANTLR grammars-v4</a> collection. Thank you to the ANTLR project and everyone who maintains it.</span>
+</footer>
+
+<script>
+(function () {
+  /* ── Language transpile showcase ─────────────────────── */
+
+  var langs = {
+    python: {
+      cap: "Python in",
+      src: '<span class="kw">def</span> <span class="fn">greet</span>(name):\n    <span class="kw">return</span> <span class="s">"hello "</span> + name',
+      mid: '<span class="kw">uir-fn</span>(name=greet, params=[name],\n  body=<span class="fn">call</span>(+, <span class="s">"hello "</span>, name))',
+      outCap: "JavaScript out",
+      out: '<span class="kw">function</span> <span class="fn">greet</span>(name) {\n  <span class="kw">return</span> <span class="s">"hello "</span> + name;\n}',
+      note: 'Python in, JavaScript out. The same <code>uir-fn</code> sits in the middle.'
+    },
+    javascript: {
+      cap: "JavaScript in",
+      src: '<span class="kw">function</span> <span class="fn">greet</span>(name) {\n  <span class="kw">return</span> <span class="s">"hello "</span> + name;\n}',
+      mid: '<span class="kw">uir-fn</span>(name=greet, params=[name],\n  body=<span class="fn">call</span>(+, <span class="s">"hello "</span>, name))',
+      outCap: "Python out",
+      out: '<span class="kw">def</span> <span class="fn">greet</span>(name):\n    <span class="kw">return</span> <span class="s">"hello "</span> + name',
+      note: 'JavaScript in, Python out. The tree does not care which side it came from.'
+    },
+    typescript: {
+      cap: "TypeScript in",
+      src: '<span class="kw">function</span> <span class="fn">greet</span>(name: <span class="fn">string</span>): <span class="fn">string</span> {\n  <span class="kw">return</span> <span class="s">"hello "</span> + name;\n}',
+      mid: '<span class="kw">uir-fn</span>(name=greet, params=[name: string],\n  body=<span class="fn">call</span>(+, <span class="s">"hello "</span>, name))',
+      outCap: "JavaScript out",
+      out: '<span class="kw">function</span> <span class="fn">greet</span>(name) {\n  <span class="kw">return</span> <span class="s">"hello "</span> + name;\n}',
+      note: 'Type annotations survive lowering, then drop away when you emit JavaScript.'
+    },
+    tsx: {
+      cap: "TSX / React in",
+      src: '<span class="kw">export default function</span> <span class="fn">Greet</span>({ name }) {\n  <span class="kw">return</span> &lt;h1&gt;hello {name}&lt;/h1&gt;;\n}',
+      mid: '<span class="kw">uir-fn</span>(name=Greet, params=[{ name }],\n  body=<span class="fn">uir-element</span>(h1, <span class="s">"hello "</span>, name))',
+      outCap: "JavaScript out",
+      out: '<span class="kw">export default function</span> <span class="fn">Greet</span>({ name }) {\n  <span class="kw">return</span> <span class="fn">React</span>.createElement(<span class="s">"h1"</span>, <span class="kw">null</span>, <span class="s">"hello "</span>, name);\n}',
+      note: 'JSX lowers to a <code>uir-element</code>, then emits back out as <code>createElement</code> calls.'
+    },
+    clojure: {
+      cap: "Clojure in",
+      src: '(<span class="kw">defn</span> <span class="fn">greet</span> [name]\n  (<span class="fn">str</span> <span class="s">"hello "</span> name))',
+      mid: '<span class="kw">uir-fn</span>(name=greet, params=[name],\n  body=<span class="fn">call</span>(str, <span class="s">"hello "</span>, name))',
+      outCap: "Python out",
+      out: '<span class="kw">def</span> <span class="fn">greet</span>(name):\n    <span class="kw">return</span> <span class="s">"hello "</span> + name',
+      note: 'Lisp surface, the same <code>uir-fn</code> underneath, Python on the way out.'
+    },
+    json: {
+      cap: "JSON in",
+      src: '{\n  <span class="s">"greet"</span>: <span class="s">"hello"</span>,\n  <span class="s">"count"</span>: 3\n}',
+      mid: '<span class="kw">uir-record</span>({ greet: <span class="s">"hello"</span>, count: 3 })',
+      outCap: "Clojure out",
+      out: '{:greet <span class="s">"hello"</span>, :count 3}',
+      note: 'JSON and a Clojure map are the same <code>uir-record</code> once lowered.'
+    }
+  };
+
+  var langTabs = document.querySelectorAll('#lang-tabs .tab');
+  var srcCap = document.getElementById('src-cap');
+  var srcCode = document.getElementById('src-code');
+  var midCode = document.getElementById('mid-code');
+  var outCap = document.getElementById('out-cap');
+  var outCode = document.getElementById('out-code');
+  var langNote = document.getElementById('transform-note');
+
+  function replayFade(el) {
+    el.classList.remove('fade');
+    void el.offsetWidth;
+    el.classList.add('fade');
+  }
+
+  function showLang(id) {
+    var e = langs[id];
+    srcCap.textContent = e.cap;
+    srcCode.innerHTML = e.src;
+    midCode.innerHTML = e.mid;
+    outCap.textContent = e.outCap;
+    outCode.innerHTML = e.out;
+    langNote.innerHTML = e.note;
+    for (var i = 0; i < langTabs.length; i++) {
+      langTabs[i].classList.toggle('active', langTabs[i].dataset.lang === id);
+    }
+    replayFade(srcCode);
+    replayFade(midCode);
+    replayFade(outCode);
+  }
+
+  for (var i = 0; i < langTabs.length; i++) {
+    langTabs[i].addEventListener('click', function () {
+      showLang(this.dataset.lang);
+    });
+  }
+
+  /* ── Framework-to-static showcase ────────────────────── */
+
+  var react = {
+    hooks: {
+      src: '<span class="kw">export default function</span> <span class="fn">Counter</span>() {\n  <span class="kw">const</span> [n, setN] = <span class="fn">useState</span>(0);\n  <span class="fn">useEffect</span>(() =&gt; {\n    document.title = <span class="s">"count "</span> + n;\n  }, [n]);\n  <span class="kw">return</span> &lt;button onClick={() =&gt; setN(n + 1)}&gt;{n}&lt;/button&gt;;\n}',
+      mid: '<span class="kw">uir-fn</span>(Counter, [])\n  state: n &lt;- <span class="fn">useState</span>(0)\n  effect: set document.title\n  body: <span class="fn">uir-element</span>(button, { onClick }, n)',
+      out: '&lt;button id="count"&gt;0&lt;/button&gt;\n&lt;script&gt;\n  <span class="kw">let</span> n = 0;\n  <span class="kw">const</span> btn = document.getElementById(<span class="s">"count"</span>);\n  btn.onclick = () =&gt; {\n    n += 1;\n    btn.textContent = n;\n    document.title = <span class="s">"count "</span> + n;\n  };\n&lt;/script&gt;',
+      note: 'Hooks, state, and effects become plain DOM listeners and variables.'
+    },
+    data: {
+      src: '<span class="kw">export default function</span> <span class="fn">Posts</span>({ posts }) {\n  <span class="kw">return</span> &lt;ul&gt;{posts.map(p =&gt; &lt;li&gt;{p.title}&lt;/li&gt;)}&lt;/ul&gt;;\n}\n\n<span class="kw">export async function</span> <span class="fn">getStaticProps</span>() {\n  <span class="kw">const</span> posts = <span class="kw">await</span> <span class="fn">fetchPosts</span>();\n  <span class="kw">return</span> { props: { posts } };\n}',
+      mid: '<span class="kw">uir-page</span>(Posts)\n  <span class="kw">uir-fn</span>(Posts, [{ posts }])\n    body: <span class="fn">uir-element</span>(ul, map(li))\n  getStaticProps -&gt; <span class="kw">uir-fn</span>(returns { props })',
+      out: '&lt;!-- pre-rendered at build time --&gt;\n&lt;ul&gt;\n  &lt;li&gt;First post&lt;/li&gt;\n  &lt;li&gt;Second post&lt;/li&gt;\n&lt;/ul&gt;',
+      note: 'getStaticProps runs at build time and bakes the fetched data into static HTML.'
+    },
+    routing: {
+      src: '<span class="c">// pages/index.js</span>\n<span class="kw">export default function</span> <span class="fn">Home</span>() {\n  <span class="kw">return</span> &lt;Link href="/about"&gt;About&lt;/Link&gt;;\n}',
+      mid: '<span class="kw">uir-page</span>("/", Home)\n  body: <span class="fn">uir-link</span>(to = /about)',
+      out: '&lt;!-- /index.html --&gt;\n&lt;a href="/about.html"&gt;About&lt;/a&gt;\n\n&lt;!-- /about.html --&gt;\n&lt;h1&gt;About us&lt;/h1&gt;',
+      note: 'A multi-page Next.js app becomes a folder of static HTML files, links rewritten to match.'
+    },
+    head: {
+      src: '<span class="kw">import</span> <span class="fn">Head</span> <span class="kw">from</span> <span class="s">"next/head"</span>;\n\n<span class="kw">export default function</span> <span class="fn">Page</span>() {\n  <span class="kw">return</span> (&lt;&gt;\n    &lt;Head&gt;&lt;title&gt;Hello&lt;/title&gt;&lt;/Head&gt;\n    &lt;h1&gt;Hello&lt;/h1&gt;\n  &lt;/&gt;);\n}',
+      mid: '<span class="kw">uir-page</span>(Page)\n  <span class="fn">uir-head</span>(title = Hello)\n  body: <span class="fn">uir-element</span>(h1, <span class="s">"Hello"</span>)',
+      out: '&lt;!doctype html&gt;\n&lt;head&gt;\n  &lt;title&gt;Hello&lt;/title&gt;\n&lt;/head&gt;\n&lt;body&gt;\n  &lt;h1&gt;Hello&lt;/h1&gt;\n&lt;/body&gt;',
+      note: 'next/head moves the title and meta tags into the static HTML head.'
+    }
+  };
+
+  var reactTabs = document.querySelectorAll('#react-tabs .tab');
+  var rSrc = document.getElementById('r-src-code');
+  var rMid = document.getElementById('r-mid-code');
+  var rOut = document.getElementById('r-out-code');
+  var reactNote = document.getElementById('react-note');
+
+  function showReact(id) {
+    var e = react[id];
+    rSrc.innerHTML = e.src;
+    rMid.innerHTML = e.mid;
+    rOut.innerHTML = e.out;
+    reactNote.innerHTML = e.note;
+    for (var j = 0; j < reactTabs.length; j++) {
+      reactTabs[j].classList.toggle('active', reactTabs[j].dataset.example === id);
+    }
+    replayFade(rSrc);
+    replayFade(rMid);
+    replayFade(rOut);
+  }
+
+  for (var k = 0; k < reactTabs.length; k++) {
+    reactTabs[k].addEventListener('click', function () {
+      showReact(this.dataset.example);
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

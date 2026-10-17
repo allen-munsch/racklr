@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How racklr works: grammar in, compiler out</title>
+<meta name="description" content="How racklr works: a grammar generates the parser, source lowers to one shared tree, and effect rows put a readable boundary on what generated code may do.">
+<meta property="og:title" content="How racklr works: grammar in, compiler out">
+<meta property="og:description" content="A grammar generates the parser, source lowers to one shared tree, and effect rows put a readable boundary on what generated code may do.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<style>
+  :root {
+    --dark: #0c0e14;
+    --dark-2: #131722;
+    --ink: #13141a;
+    --ink-soft: #5b606e;
+    --bg: #f6f7f9;
+    --bg-2: #eceef3;
+    --rule: #e2e5ec;
+    --acid: #d4f73f;
+    --indigo: #4f46e5;
+    --teal: #14b8a6;
+    --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", Charter, "Bitstream Charter", Georgia, "Times New Roman", serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .wrap { max-width: 60rem; margin: 0 auto; padding-inline: 1.5rem; }
+
+  a { color: var(--indigo); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--bg-2);
+    padding: 0.12em 0.35em;
+    border-radius: 4px;
+  }
+
+  /* ── Hero ─────────────────────────────────────────────── */
+
+  .hero {
+    background:
+      radial-gradient(60rem 30rem at 80% -10%, rgba(111,107,255,0.22), transparent 60%),
+      radial-gradient(40rem 24rem at 10% 10%, rgba(20,184,166,0.14), transparent 55%),
+      var(--dark);
+    color: #f2f3f7;
+    padding: 1.25rem 0 2.75rem;
+    overflow: hidden;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3.5rem;
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -0.01em;
+    color: #f2f3f7;
+  }
+  .logo .mark { color: var(--acid); }
+
+  .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+  .nav-links a { color: #b8bdc9; font-size: 0.92rem; font-family: var(--mono); }
+  .nav-links a:hover { color: #f2f3f7; }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 4.5rem);
+    line-height: 0.98;
+    margin: 0 0 1.25rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+  }
+
+  .lede {
+    font-size: 1.25rem;
+    line-height: 1.42;
+    color: #c6cbd8;
+    max-width: 40rem;
+    margin: 0;
+  }
+
+  /* ── Pipeline diagram ─────────────────────────────────── */
+
+  .pipeline-zone {
+    background: var(--dark);
+    padding: 0 0 3.5rem;
+    margin-bottom: 4.5rem;
+  }
+
+  .pipeline {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+    margin: 0 0 1.25rem;
+  }
+
+  .stage {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--dark-2);
+    border: 1px solid #262c3d;
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+  }
+
+  .stage .n {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--acid);
+    letter-spacing: 0.12em;
+    min-width: 2.5rem;
+  }
+
+  .stage .what {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: #e7eaf2;
+    font-size: 0.95rem;
+  }
+
+  .stage .how {
+    color: #8a8f9e;
+    font-size: 0.9rem;
+  }
+
+  .stage .down {
+    margin-left: auto;
+    color: #8a8f9e;
+    font-family: var(--mono);
+  }
+
+  .subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.25rem;
+  }
+  .subnav a {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    color: #8a8f9e;
+  }
+  .subnav a:hover { color: #f2f3f7; }
+
+  /* ── Sections ─────────────────────────────────────────── */
+
+  main { padding-bottom: 1rem; }
+
+  section { margin-bottom: 4.5rem; }
+
+  .section-head {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--indigo);
+    margin: 0 0 1.1rem;
+  }
+
+  h2 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    line-height: 1.08;
+    margin: 0 0 1rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  p { margin: 0 0 1rem; }
+
+  .lede-light {
+    font-size: 1.2rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    max-width: 44rem;
+    margin: 0 0 1.5rem;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+    margin: 2rem 0 1.5rem;
+  }
+
+  .fact {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 1.4rem 1.3rem;
+  }
+
+  .fact .t {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--ink);
+    display: block;
+    line-height: 1.1;
+    margin-bottom: 0.5rem;
+  }
+  .fact .t span { color: var(--indigo); }
+  .fact p { margin: 0; color: var(--ink-soft); font-size: 0.95rem; }
+
+  pre.code {
+    background: var(--dark);
+    color: #e7eaf2;
+    border-radius: 12px;
+    padding: 1.2rem 1.35rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin: 1.5rem 0 1.75rem;
+  }
+  pre.code code { background: none; padding: 0; font-size: inherit; color: inherit; }
+  pre.code .c { color: #7a8196; }
+  pre.code .kw { color: #a5b4fc; }
+  pre.code .s { color: #fbbf24; }
+  pre.code .fn { color: #5eead4; }
+
+  /* ── Footer ───────────────────────────────────────────── */
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 2rem 0 3rem;
+    color: var(--ink-soft);
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  /* ── Dark mode ────────────────────────────────────────── */
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101318;
+      --bg-2: #171b24;
+      --ink: #eef0f5;
+      --ink-soft: #a3a9b8;
+      --rule: #262c3a;
+      --indigo: #a5b4fc;
+    }
+    .pipeline-zone { border-bottom: 1px solid #1d2331; }
+    .fact { background: var(--bg-2); border-color: var(--rule); }
+    pre.code { background: #0b0d13; }
+    code { background: var(--bg-2); }
+    .stage { background: #0e1118; }
+  }
+
+  @media (max-width: 720px) {
+    .facts { grid-template-columns: 1fr; }
+    .stage { flex-wrap: wrap; }
+    .stage .down { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <nav>
+      <span class="logo">rack<span class="mark">lr</span></span>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="https://github.com/allen-munsch/racklr">GitHub</a>
+      </div>
+    </nav>
+
+    <h1>How it works.</h1>
+    <p class="lede">
+      Four stages, one pipeline. Give racklr a grammar and it hands back a front end. Each stage is
+      one section below.
+    </p>
+  </div>
+</header>
+
+<main>
+  <div class="pipeline-zone">
+    <div class="wrap">
+      <div class="pipeline">
+        <div class="stage">
+          <span class="n">01</span>
+          <span class="what">Grammar</span>
+          <span class="how">a description of the language, written in ANTLR4</span>
+          <span class="down" aria-hidden="true">&darr;</span>
+        </div>
+        <div class="stage">
+          <span class="n">02</span>
+          <span class="what">Generated parser</span>
+          <span class="how">a lexer and parser built from that description</span>
+          <span class="down" aria-hidden="true">&darr;</span>
+        </div>
+        <div class="stage">
+          <span class="n">03</span>
+          <span class="what">Shared tree</span>
+          <span class="how">source lowered to one intermediate representation</span>
+          <span class="down" aria-hidden="true">&darr;</span>
+        </div>
+        <div class="stage">
+          <span class="n">04</span>
+          <span class="what">Target code</span>
+          <span class="how">text emitted back out in another language</span>
+        </div>
+      </div>
+
+      <nav class="subnav" aria-label="On this page">
+        <a href="#core">Core idea</a>
+        <a href="#generation">Generation</a>
+        <a href="#tree">Shared tree</a>
+        <a href="#adding">Adding a language</a>
+        <a href="#contract">The contract</a>
+      </nav>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <section id="core">
+      <p class="section-head">The core idea</p>
+      <h2>A compiler is a shape, not a language.</h2>
+      <p class="lede-light">
+        Every compiler does the same four things: read source, understand it, transform it, and print
+        it back out. racklr keeps reading and writing language-specific, generates the parser from a
+        grammar, and shares the tree in the middle, along with everything that operates on it.
+      </p>
+      <p>
+        The consequence is that adding a language stops being a big project. You write down what the
+        language looks like, you describe how its ideas map to the shared tree, and you describe how
+        to print the tree back out. The rest of the pipeline already exists.
+      </p>
+    </section>
+
+    <section id="generation">
+      <p class="section-head">Generation</p>
+      <h2>Write the spec, get the parser.</h2>
+      <p class="lede-light">
+        You do not hand-write a lexer or a parser. You write a grammar, which is a description of
+        what the language looks like, and racklr generates the parser from it.
+      </p>
+      <p>
+        The generated parser does what a hand-written one would: it turns source text into a tree,
+        and it handles the fiddly parts for you. Modes for lexing, recursive structures that would
+        trip up a naive parser, and indentation-sensitive languages with the right lexer support.
+      </p>
+      <pre class="code"><span class="c">// Lisp.g4</span>
+<span class="kw">grammar</span> Lisp;
+
+form   : list_ | vector | atom ;
+list_  : '(' form* ')' ;
+vector : '[' form* ']' ;
+atom   : SYMBOL | NUMBER ;
+
+<span class="c">// the lexer rules</span>
+SYMBOL : [a-zA-Z+*/=&lt;&gt;!?-]+ ;
+NUMBER : [0-9]+ ;
+WS     : [ \t\r\n]+ -> skip ;</pre>
+    </section>
+
+    <section id="tree">
+      <p class="section-head">The shared tree</p>
+      <h2>One tree, many languages.</h2>
+      <p class="lede-light">
+        The parser hands you a tree in the shape of the source language. racklr lowers that into a
+        single shared tree, the universal intermediate representation, and every language agrees on
+        what lives in it.
+      </p>
+      <p>
+        The shared tree has a small set of shapes that cover what programs actually do. A function, a
+        call, a branch, a loop, an assignment. A Clojure function and a Python function are different
+        on the surface and identical underneath. Once something is in the shared tree, every language
+        that can read it becomes a target.
+      </p>
+      <pre class="code"><span class="c">;; Clojure</span>
+(<span class="kw">defn</span> <span class="fn">greet</span> [name] (<span class="fn">str</span> <span class="s">"hello "</span> name))
+
+<span class="c">;; Python</span>
+<span class="kw">def</span> <span class="fn">greet</span>(name):
+    <span class="kw">return</span> <span class="s">"hello "</span> + name
+
+<span class="c">;; both become the same shape</span>
+<span class="kw">uir-fn</span>(name=greet, params=[name],
+  body=<span class="fn">call</span>(+, <span class="s">"hello "</span>, name))</pre>
+    </section>
+
+    <section id="adding">
+      <p class="section-head">Adding a language</p>
+      <h2>Three small pieces.</h2>
+      <p class="lede-light">
+        Everything above is shared. A new language only brings its own three pieces.
+      </p>
+      <div class="facts">
+        <div class="fact">
+          <span class="t">A <span>grammar</span></span>
+          <p>The description of the language, which generates its parser.</p>
+        </div>
+        <div class="fact">
+          <span class="t">A <span>lowering pass</span></span>
+          <p>How the source tree maps onto the shared tree.</p>
+        </div>
+        <div class="fact">
+          <span class="t">An <span>emitter</span></span>
+          <p>How the shared tree prints back out as text.</p>
+        </div>
+      </div>
+      <p>
+        Once those three exist, the language reaches every other language through the shared tree.
+        That is the whole bet: do the transformation once, on the shared tree, and let every language
+        meet there.
+      </p>
+    </section>
+
+    <section id="contract">
+      <p class="section-head">The contract</p>
+      <h2>Side effects get a type system.</h2>
+      <p class="lede-light">
+        An effect row says what a function is allowed to do. It names the capabilities the function
+        may use, and it says how much and within what scope.
+      </p>
+      <pre class="code"><span class="c">;; this function may call the LLM, at most 5 times</span>
+<span class="kw">^{:effects</span> {:llm {:max 5}}}
+(<span class="kw">defn</span> summarize [q] (llm/query q))</pre>
+      <p>
+        Inference walks the call graph and composes those rows. A function that calls something with
+        effects inherits them, and the join has to stay inside the caller's own row. If a call
+        oversteps, inference rejects it at compile time. Where the call graph is not statically
+        resolvable, racklr emits a generated guard wrapper that validates the row before the function
+        runs. The contract is checked at the boundary, not guessed at in review.
+      </p>
+      <p>
+        That places effect rows between the two familiar extremes. Formal verification proves
+        properties outright, at a cost that keeps it rare. Ad hoc specs are cheap but drift from the
+        code. An effect row sits in the middle: it does not try to read the code, it states what the
+        code may do, and it enforces that at the seam.
+      </p>
+      <p class="lede-light">
+        Ready to try it? The front page has the install and run commands.
+        <a href="index.html">Back to the landing page</a>.
+      </p>
+    </section>
+
+  </div>
+</main>
+
+<footer class="wrap">
+  <span>racklr is a Racket project, GPL-3.0-or-later.</span>
+  <span>Grammars vendored from the <a href="https://github.com/antlr/grammars-v4">ANTLR grammars-v4</a> collection. Thank you to the ANTLR project and everyone who maintains it.</span>
+</footer>
+
+</body>
+</html>
