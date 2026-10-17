@@ -381,7 +381,7 @@
     (if (null? param-extractions)
         body
         (uir-block (append param-extractions (uir-block-stmts body)))))
-  (define fn-uir (uir-fn #f params eff-body #f))
+  (define fn-uir (uir-fn #f params eff-body #f #f))
   (cond [is-async (uir-set! name (uir-call (uir-symbol "async-fn") (list fn-uir)))]
         [is-generator (uir-set! name (uir-call (uir-symbol "gen-fn") (list fn-uir)))]
         [else (uir-set! name fn-uir)]))

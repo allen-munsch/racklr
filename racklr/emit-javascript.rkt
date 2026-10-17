@@ -178,7 +178,7 @@
            [else
             (format "~a = ~a" (emit-javascript name) (emit-javascript val))])]
     
-    [(uir-fn _ params body _)
+    [(uir-fn _ params body _ _)
      (define param-str
        (string-join (map emit-javascript params) ", "))
      (format "function(~a) { ~a }" param-str (emit-body body))]

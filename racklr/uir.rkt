@@ -75,7 +75,10 @@
       (uir-pat-mapping? v)
       (uir-pat-double-star? v)
       (uir-pat-class? v)
-      (uir-pat-group? v)))
+      (uir-pat-group? v)
+      (uir-effect-row? v)
+      (uir-effect-entry? v)
+      (uir-subtype? v)))
 
 (define (uir-tag v)
   (cond [(uir-null? v)   'null]
@@ -140,6 +143,9 @@
         [(uir-pat-double-star? v) 'pat-double-star]
         [(uir-pat-class? v)      'pat-class]
         [(uir-pat-group? v)      'pat-group]
+        [(uir-effect-row? v)     'effect-row]
+        [(uir-effect-entry? v)   'effect-entry]
+        [(uir-subtype? v)        'subtype]
         [else (error 'uir-tag "not a UIR node: ~e" v)]))
 
 ;; ── Serialization ──────────────────────────────────────────────────
@@ -160,7 +166,8 @@
         [(uir-fn? v) `(fn ,(let ([n (uir-fn-name v)]) (if n (uir->sexp n) #f))
                           ,(map uir->sexp (uir-fn-params v))
                           ,(uir->sexp (uir-fn-body v))
-                          ,(let ([rt (uir-fn-return-type v)]) (if rt (uir->sexp rt) #f)))]
+                          ,(let ([rt (uir-fn-return-type v)]) (if rt (uir->sexp rt) #f))
+                          ,(let ([e (uir-fn-effects v)]) (if e (uir->sexp e) #f)))]
         [(uir-typed-param? v) `(typed-param ,(uir->sexp (uir-typed-param-name v))
                                            ,(uir->sexp (uir-typed-param-type v))
                                            ,(uir->sexp (uir-typed-param-default v)))]
@@ -265,6 +272,15 @@
                                 ,(uir->sexp (uir-state-init v)))]
         [(uir-jsx-expr? v) `(jsx-expr ,(uir-jsx-expr-content v))]
         [(uir-spread? v) `(spread ,(uir->sexp (uir-spread-expr v)))]
+        [(uir-effect-row? v) `(effect-row ,@(map uir->sexp (uir-effect-row-entries v)))]
+        [(uir-effect-entry? v)
+         `(effect-entry ,(uir->sexp (uir-effect-entry-name v))
+                        ,(uir-effect-entry-modality v)
+                        ,(map uir->sexp (uir-effect-entry-ops v))
+                        ,(let ([b (uir-effect-entry-budget v)]) (if b b #f))
+                        ,(let ([s (uir-effect-entry-scope v)]) (if s (uir->sexp s) #f)))]
+        [(uir-subtype? v) `(subtype ,(uir->sexp (uir-subtype-left v))
+                                    ,(uir->sexp (uir-subtype-right v)))]
         [else (error 'uir->sexp "not a UIR node: ~e" v)]))
 
 (define (sexp->uir s)
@@ -282,7 +298,7 @@
                          [_ (error 'sexp->uir "invalid record entry: ~e" e)]))
                      es))]
     [`(symbol ,n) (uir-symbol n)]
-    [`(fn ,name ,ps ,body ,rt) (uir-fn (if name (sexp->uir name) #f) (map sexp->uir ps) (sexp->uir body) (if rt (sexp->uir rt) #f))]
+    [`(fn ,name ,ps ,body ,rt ,efx) (uir-fn (if name (sexp->uir name) #f) (map sexp->uir ps) (sexp->uir body) (if rt (sexp->uir rt) #f) (if efx (sexp->uir efx) #f))]
     [`(typed-param ,name ,type ,default) (uir-typed-param (sexp->uir name) (sexp->uir type) (sexp->uir default))]
     [`(call ,c ,as) (uir-call (sexp->uir c) (map sexp->uir as))]
     [`(let ,n ,v ,body) (uir-let (sexp->uir n) (sexp->uir v) (sexp->uir body))]
@@ -361,6 +377,12 @@
     [`(state ,n ,init) (uir-state (sexp->uir n) (sexp->uir init))]
      [`(jsx-expr ,content) (uir-jsx-expr content)]
     [`(spread ,expr) (uir-spread (sexp->uir expr))]
+    [`(effect-row ,es ...) (uir-effect-row (map sexp->uir es))]
+    [`(effect-entry ,name ,modality ,ops ,budget ,scope)
+     (uir-effect-entry (sexp->uir name) modality (map sexp->uir ops)
+                       (if (eq? budget #f) #f budget)
+                       (if (eq? scope #f) #f (sexp->uir scope)))]
+    [`(subtype ,l ,r) (uir-subtype (sexp->uir l) (sexp->uir r))]
      [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
 
 (require json)
@@ -375,6 +397,7 @@
                           'fn 'call 'let 'var 'set! 'ann-set! 'if 'block 'return 'for-each 'while 'try 'with 'await 'yield 'decorated 'get 'paren
                           'class 'method 'field 'new 'interface 'module 'import 'export 'enum 'enum-variant
                           'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr 'spread
+                          'effect-row 'effect-entry 'subtype
                           'match 'case 'pat-literal 'pat-capture 'pat-wildcard 'pat-value 'pat-or 'pat-as
                           'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group))
 
