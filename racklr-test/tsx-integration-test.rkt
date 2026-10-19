@@ -746,6 +746,16 @@ export default () => (<div><Head><title>My Custom Title</title></Head><p>Hello</
                   "type Props = {  x: string; y: number }")])
   (check-true (string-contains? processed "{ x:") "B63c: normalize double-space after {"))
 
+;; B63e: prose mentioning "interface" before a commented-out import must not
+;; corrupt the comment (the scanner falsely treats "interface below ... {"
+;; as a type block and inserts ; inside the commented import).
+(let ([processed (preprocess-imports
+                  "// example, to import the interface below do:\n//\n// import { User } from 'path/to/interfaces';\n\nexport type User = {\n  id: number\n  name: string\n}")])
+  (check-true (string-contains? processed "// import { User } from 'path/to/interfaces';")
+              "B63e: commented-out import left intact")
+  (check-true (string-contains? processed "id: number;") "B63e: real type member still gets ;")
+  (check-true (string-contains? processed "name: string;") "B63e: second member still gets ;"))
+
 ;; B63d: full pipeline with type members carrying semicolons
 (let ([js (tsx->js
            "type Props = {

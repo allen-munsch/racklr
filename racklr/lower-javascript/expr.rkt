@@ -68,9 +68,13 @@
                 (if (and (cst-node? args-node) (eq? (tag-of args-node) 'arguments))
                     (uir-call callee (lower-arguments args-node tk-type tk-value))
                     (uir-null))])]
-        [(= (length kids) 3)
-         (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
-                (cond
+         [(= (length kids) 3)
+          (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'OpenParen)
+                      (tok? (third kids) tk-type) (eq? (tk-type (third kids)) 'CloseParen))
+                 ;; Parenthesized expression: ( expressionSequence )
+                 (uir-paren (lower-expression-sequence (second kids) tk-type tk-value))]
+                [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
+                 (cond
                   ;; new.target
                   [(and (tok? (second kids) tk-type) (eq? (tk-type (second kids)) 'Dot))
                    (define target (lower-single-expression (third kids) tk-type tk-value))
@@ -388,10 +392,13 @@
                (loop (cdr ks))]
               [else (loop (cdr ks))]))))
   (define body
-    (if body-node
-        (let ([se (first (cst-kids body-node))])
-          (lower-single-expression se tk-type tk-value))
-        (uir-null)))
+    (cond
+      [(not body-node) (uir-null)]
+      [(find-kid body-node (quote functionBody)) =>
+       (λ (fb) ((fn-body-lowerer) fb tk-type tk-value))]
+      [else
+       (let ([se (first (cst-kids body-node))])
+         (lower-single-expression se tk-type tk-value))]))
   (uir-call (uir-symbol "=>") (list (uir-list (reverse params)) body)))
 
 (define (lower-function-expr node tk-type tk-value)

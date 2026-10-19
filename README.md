@@ -1,18 +1,19 @@
-# racklr — Multi-Language Transpiler Toolkit
+# racklr: Multi-Language Transpiler Toolkit
 
 Racklr is a parser generator and universal intermediate representation (UIR) toolkit built in Racket. It reads ANTLR4 grammar definitions (.g4 files), generates working lexer+parser modules, parses source text into Concrete Syntax Trees (CSTs), lowers CSTs to a language-independent UIR, and emits target code from UIR nodes.
 
-**Experimental release — Python 3 and JavaScript round-trips are working. Cross-compilation and additional languages are planned for future releases.**
+**Experimental release. Six front ends parse, lower, and emit through the shared UIR: JSON, Python, JavaScript, TypeScript, TSX/React, and Clojure. Effect-row annotation, inference, and contract checking are implemented; runtime enforcement is planned.**
 
 ## Status
 
-| Language | Parser | Lowering (CST → UIR) | Emit (UIR → source) | Round-trip |
-|----------|--------|---------------------|----------------------|------------|
-| JSON | ✓ | ✓ | ✓ | ✓ |
-| Python 3 | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ |
+- **JSON:** parser, lowering, and emit; round-trips.
+- **Python 3:** parser, lowering, and emit; round-trips.
+- **JavaScript:** parser, lowering, and emit; round-trips.
+- **TypeScript:** parser and lowering; emits through the JavaScript emitter (TS → JS, type annotations drop at emit).
+- **TSX / React:** parser and lowering; emits through the JSX/HTML emitters (hooks lower to static HTML + vanilla JS).
+- **Clojure:** parser, lowering, and emit; round-trips and carries effects metadata.
 
-**Planned (not yet implemented):** Rust, TypeScript, HTML, CSS, React/JSX, Svelte, cross-compilation pipeline.
+**Planned (not yet implemented):** Rust, HTML/CSS, Svelte, arbitrary cross-compilation between front ends, and the effect runtime-enforcement layer.
 
 ## Architecture
 
@@ -41,6 +42,9 @@ grammars-v4/*.g4          ← ANTLR4 grammar files (vendor)
                 │
                 ▼
   uir.rkt                 ← UIR struct definitions (Tier 0 + Tier 1 types)
+                 │
+                 ▼
+  effects/                ← effect-row annotation, inference, contract checks
 ```
 
 ## Component Reference
@@ -75,6 +79,19 @@ Known limitations: template literals and tagged templates not yet implemented; `
 ### lower-json.rkt / emit-json.rkt
 JSON pipeline proof-of-concept: parse JSON → lower to UIR → emit JSON text → parse again.
 
+### Effects (racklr/effects/)
+
+Effect rows give generated code a readable boundary: a function declares which capabilities it may use, how often, and in what scope. Four pieces are implemented and tested:
+
+- `infer.rkt`: effect inference; composes rows up the call graph from annotations and known effects, and defers higher-order calls whose callee is not statically known.
+- `contract.rkt`: contract checking; subtyping between rows, budgets as upper bounds, and prohibitions.
+- `python-annot.rkt`: Python annotation surface (`__effects__` attribute / decorator) extracted into a UIR effect row.
+- `clojure-annot.rkt`: Clojure annotation surface (`^{:effects ...}` metadata) extracted into a UIR effect row.
+
+Both emitters attach the row to the emitted function so it survives round-trips: Python via a `__effects__` attribute, Clojure via `:__effects__` metadata on the `defn`. The Clojure effects test executes the emitted code through the [Jolt](https://github.com/jolt-lang/jolt) runtime and reads the row back off the var.
+
+**Planned:** runtime enforcement. Static checks run wherever the call graph is resolvable; a runtime guard covers the rest. Jolt is the Clojure runtime for this, and effect-ts is the chosen direction for JavaScript/TypeScript emission.
+
 ## Generated Parser Design
 
 ### Lexer (tokenize)
@@ -100,24 +117,31 @@ Recursive descent with backtracking. Each grammar rule becomes a `parse-XXX` fun
 
 ## Testing
 
-All 1,129 tests pass.
+Run each suite directly from inside `racklr-test/`. `raco test racklr-test/*.rkt` is unreliable in this toolchain, and tests that generate-and-load grammars resolve their grammar paths relative to the working directory.
 
-- `raco test racklr-test/gen-json-test.rkt` — JSON parser generation and parsing tests
-- `raco test racklr-test/gen-python3-test.rkt` — Python 3 parser generation and parsing tests
-- `raco test racklr-test/gen-javascript-test.rkt` — JavaScript parser generation and parsing tests
-- `raco test racklr-test/lower-python-test.rkt` — Python lowering + emit round-trip tests
-- `raco test racklr-test/lower-javascript-test.rkt` — JavaScript lowering + emit round-trip tests
-- `raco test racklr-test/gend-parser-test.rkt` — Parser generator unit tests
-- `raco test racklr-test/g4-parse-test.rkt` — Grammar parser tests
-- `raco test racklr-test/uir-test.rkt` — UIR type and serialization tests
-- `raco test racklr-test/tree-test.rkt` — Core tree operations
+```bash
+cd racklr-test
+racket effects-infer-test.rkt        # effect inference
+racket effects-contract-test.rkt     # contract checking
+racket effects-python-annot-test.rkt # Python effect annotations
+racket effects-clojure-test.rkt      # Clojure effects + Jolt runtime round-trip
+racket lower-clojure-test.rkt        # Clojure lowering + emit
+racket lower-typescript-test.rkt     # TypeScript lowering
+racket tsx-integration-test.rkt      # TSX/React end-to-end
+racket lower-python-test.rkt         # Python lowering + emit
+racket lower-javascript-test.rkt     # JavaScript lowering + emit
+racket gend-parser-test.rkt          # parser generator
+racket g4-parse-test.rkt             # grammar parser
+racket uir-test.rkt                  # UIR types + serialization
+```
 
-Run all tests: `raco test racklr-test/*.rkt`
+Other suites cover parser generation per language (`gen-*-test.rkt`), JSON/HTML emitters, the esbuild integration, and core tree/range operations.
 
 ## Dependencies
 
-- Racket 9.x (tested with 9.2)
+- Racket 9.3
 - No external Racket packages required
+- [Jolt](https://github.com/jolt-lang/jolt) (Clojure runtime) for the Clojure effects round-trip test; the suite skips its Jolt checks if the binary is not on `PATH`
 - ANTLR4 grammar files from [grammars-v4](https://github.com/antlr/grammars-v4) (vendored in `grammars-v4/`)
 
 ## Setup
@@ -139,10 +163,13 @@ raco test racklr-test/*.rkt
 
 ## Roadmap
 
-**Future releases:**
-- Cross-compilation: Python ↔ JavaScript via UIR
-- Rust: parser + lowering + emit
-- TypeScript: parser + lowering + emit
-- HTML, CSS: Tier 2 UIR lowering + emit
-- React/JSX, Svelte: Tier 2 UIR lowering + emit
-- Universal transpilation pipeline with language registry
+**Shipped:**
+- Effect-row annotation (Python, Clojure), inference, and contract checking
+- Six front ends through the shared UIR, including Clojure and TypeScript/TSX
+
+**Next, in priority order:**
+- Clojure effects runtime enforcement via Jolt, then the same for the JS/TS side via effect-ts
+- Arbitrary cross-compilation between any two front ends (each pair becomes two small passes over the shared UIR)
+- Rust: lowering + emit (parser generation is already tested)
+- HTML/CSS and Svelte: Tier 2 UIR lowering + emit
+- Universal transpilation pipeline with a language registry

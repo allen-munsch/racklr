@@ -33,7 +33,7 @@
                         [else (and (uir-if-else node) (walk (uir-if-else node)))])]
           [(uir-jsx-expr? node)
            (define expr (uir-jsx-expr-content node))
-           (if (regexp-match? #rx"<[a-zA-Z]" expr)
+           (if (regexp-match? #rx"<(?:[a-zA-Z]|>)" expr)
                (or (process-cond-jsx-expr expr) node)
                node)]
           [else node]))
@@ -41,7 +41,7 @@
   (define (find-jsx-in-text text)
     ;; Find the first < followed by a letter, return substring from there
     (define trimmed (string-trim text))
-    (define m (regexp-match-positions #rx"<[a-zA-Z]" trimmed))
+    (define m (regexp-match-positions #rx"<(?:[a-zA-Z]|>)" trimmed))
     (and m (substring trimmed (caar m))))
 
   (define (process-cond-jsx-expr expr)
@@ -50,7 +50,7 @@
     ;; capture rest after && / ? / : then extract JSX from it.
     (define m-and (regexp-match #rx"(?s:^(.+?)\\s*&&\\s*(.+)$)" trimmed))
     (define m-tern (regexp-match #rx"(?s:^(.+?)\\s*[?]\\s*(.+)\\s*:\\s*(.+)$)" trimmed))
-    (define m-inline (regexp-match #rx"(?s:^\\s*(<[a-zA-Z].+)\\s*$)" trimmed))
+    (define m-inline (regexp-match #rx"(?s:^\\s*(<(?:[a-zA-Z]|>).+)\\s*$)" trimmed))
     (cond [m-and
            (let* ([cond-expr (uir-jsx-expr (string-trim (cadr m-and)))]
                   [jsx-text (find-jsx-in-text (caddr m-and))]

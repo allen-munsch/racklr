@@ -20,8 +20,9 @@ ideas.txt
 manifest.yaml
 # Local tool sessions
 .dirge/
+# Editor/linter cache dirs
+.clj-kondo/
+.lsp/
 # npm/esbuild
 node_modules/
 package-lock.json
-# Next.js test apps for transpilation testing
-test-apps/

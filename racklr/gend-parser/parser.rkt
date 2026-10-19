@@ -58,7 +58,17 @@
   (car (child-range child)))
 
 (define (child-end child)
-  (cdr (child-range child)))")
+  (cdr (child-range child)))
+
+(define (longest rs)
+  ;; Return the parse that consumes the most tokens, ties resolved to the
+  ;; first (grammar order). Used for non-left-recursive ordered choice so a
+  ;; prefix-overlapping alternative (e.g. namespaceName) wins over a shorter
+  ;; prefix (identifier) that ANTLR4 would reject via lookahead.
+  (define good (filter (lambda (r) r) rs))
+  (and (pair? good)
+       (for/fold ([best (car good)]) ([r (cdr good)])
+         (if (> (car r) (car best)) r best))))")
 
 (define (gen-parser-rules parser-rules)
   (string-join (map gen-one-parser-rule parser-rules) "\n\n"))
@@ -82,10 +92,12 @@
   (set! primaries (reverse primaries))
   (set! binaries (reverse binaries))
   (if (null? binaries)
-      ;; No left recursion — use original direct-or pattern
-      (format "(define (parse-~a tks pos)\n  (or ~a\n      #f))"
+      ;; No left recursion — try every alternative and keep the longest parse
+      ;; (ANTLR4 resolves prefix-overlapping alternatives via lookahead, which
+      ;; the generated recursive-descent parser lacks; see namespaceName).
+      (format "(define (parse-~a tks pos)\n  (longest (list ~a)))"
               name
-              (string-join (map (lambda (a) (gen-parser-alt a name)) primaries) "\n      "))
+              (string-join (map (lambda (a) (gen-parser-alt a name)) primaries) "\n              "))
       ;; Left recursion — generate iterative accumulation form
       (gen-leftrec-rule name primaries binaries)))
 
@@ -121,12 +133,19 @@
 ;; Any self-ref (rule-ref to name) in the suffix calls (prim tks pos).
 (define (gen-leftrec-clause suffix name)
   (define N (length suffix))
+  ;; A ternary alternative (`A '?' A ':' A`) has two self-refs in its suffix;
+  ;; both operands are full expressions, not primaries, so `item ? item.name :
+  ;; x` must recurse rather than call `prim` (which cannot parse member access).
+  (define full? (>= (length (filter (lambda (e) (and (eq? (any-tree-tag e) 'rule-ref)
+                                                     (string=? (any-tree-text e) name)))
+                                    suffix))
+                    2))
   (if (zero? N)
       "(list p acc)" ;; degenerate: no suffix (shouldn't happen for valid grammar)
       (let build ([i 0])
         (define e (list-ref suffix i))
         (define pos-ref (if (zero? i) "p" (format "(car r~a)" (- i 1))))
-        (define expr (lrec-elem-expr e pos-ref name))
+        (define expr (lrec-elem-expr e pos-ref name full?))
         (define body
           (if (= i (- N 1))
               ;; Final element: feed into bin-loop with accumulated node
@@ -141,12 +160,14 @@
               (format "(and r~a ~a)" i (build (+ i 1)))))
         (format "(let ([r~a ~a]) ~a)" i expr body))))
 
-;; Like elem-expr but replaces self-refs with (prim tks pos) calls.
-(define (lrec-elem-expr e pos-ref self-name)
+;; Like elem-expr but replaces self-refs with (prim tks pos) calls — or, for
+;; ternary alternatives, with a full recursive call so member-access operands
+;; parse.
+(define (lrec-elem-expr e pos-ref self-name full?)
   (define tag (any-tree-tag e))
   (cond
     [(and (eq? tag 'rule-ref) (string=? (any-tree-text e) self-name))
-     (format "(prim tks ~a)" pos-ref)]
+     (format "(~a tks ~a)" (if full? (format "parse-~a" self-name) "prim") pos-ref)]
     [else (elem-expr e pos-ref)]))
 
 ;; elem-expr without the surrounding let — just the expression part

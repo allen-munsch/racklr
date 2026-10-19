@@ -75,7 +75,12 @@
   uir-effect-row uir-effect-row? uir-effect-row-entries
   uir-effect-entry uir-effect-entry? uir-effect-entry-name uir-effect-entry-modality
   uir-effect-entry-ops uir-effect-entry-budget uir-effect-entry-scope
-  uir-subtype uir-subtype? uir-subtype-left uir-subtype-right)
+  uir-subtype uir-subtype? uir-subtype-left uir-subtype-right
+  ;; Koka effect declarations and handlers (first-class typed effects)
+  uir-effect-decl uir-effect-decl? uir-effect-decl-name uir-effect-decl-ops
+  uir-effect-op uir-effect-op? uir-effect-op-name uir-effect-op-params uir-effect-op-result-type
+  uir-effect-handler uir-effect-handler? uir-effect-handler-effect uir-effect-handler-ops
+  uir-effect-handler-return-clause uir-effect-handler-body)
 
 ;; ── Tier 0: Core Computational IR ──────────────────────────────────
 
@@ -233,3 +238,18 @@
 ;; First-class subtype constraint: left ≤ right (left's may/budgets are
 ;; within right's). Survives lowering so downstream passes can check it.
 (struct uir-subtype (left right) #:transparent)
+
+;; ── Koka effect declarations and handlers ───────────────────────────
+
+;; `effect name` declaration. ops: (listof uir-effect-op).
+(struct uir-effect-decl (name ops) #:transparent)
+
+;; An operation declared inside an `effect` block: `fun op(params) : result-type`.
+;; params: (listof uir-typed-param), result-type: uir? (usually uir-symbol or #f).
+(struct uir-effect-op (name params result-type) #:transparent)
+
+;; A `with handler` expression. effect: #f or uir-symbol (explicitly named
+;; handler binding; pass 1 leaves it #f). ops: list of `(name params body)`
+;; triples — one per operation clause. return-clause: #f or uir (the
+;; `return(x)` clause body). body: uir (the computation being handled).
+(struct uir-effect-handler (effect ops return-clause body) #:transparent)

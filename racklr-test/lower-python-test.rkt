@@ -482,6 +482,12 @@
 ;; round-trip: typed param with default only
 (check-py "def f(x: int = 1):\n    pass\n\n" "def f(x: int = 1):\n    pass")
 
+;; round-trip: function body with return (block body, not pass)
+(check-py "def f(x):\n    return x\n\n" "def f(x):\n    return x")
+
+;; round-trip: function body with return of a binop
+(check-py "def f(a, b):\n    return a + b\n\n" "def f(a, b):\n    return a + b")
+
 ;; UIR inspection: annotated assignment
 (let ([cst (py-parse "x: int\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))

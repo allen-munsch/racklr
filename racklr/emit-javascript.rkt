@@ -357,10 +357,14 @@
                         (let ([op (uir-symbol-name (uir-call-callee (uir-set!-value node)))])
                           (or (string=? op "async-fn") (string=? op "gen-fn"))))))
           (emit-javascript node)]
-        [(and (uir-if? node)
-              (or (uir-block? (uir-if-then node))
-                  (uir-block? (uir-if-else node))))
-         (emit-javascript node)]
+        [(uir-if? node)
+         ;; Always emit a uir-if in statement position as an if-statement, never
+         ;; a ternary. A ternary with a call in the consequent (`a ? b() : c`)
+         ;; does not re-parse in the JS grammar.
+         (format "if (~a) { ~a } else { ~a }"
+                 (emit-javascript (uir-if-test node))
+                 (emit-statement (uir-if-then node))
+                 (emit-statement (uir-if-else node)))]
         [(loop-statement? node)
          (emit-javascript node)]
         [(try-statement? node)

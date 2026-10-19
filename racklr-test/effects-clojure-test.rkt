@@ -121,7 +121,7 @@
       (check-equal? code 0 (format "jolt exit code (stderr: ~a)" stderr))
       (check-true (string-contains? stdout ":llm") "jolt reads :llm effect")
       (check-true (string-contains? stdout ":max 5") "jolt reads :max budget")
-      (check-true (string-contains? stdout ":modality may") "jolt reads :modality may"))
+      (check-true (string-contains? stdout ":modality :may") "jolt reads :modality :may"))
     (displayln "jolt not found; skipping Jolt execution checks"))
 
 (displayln "All Clojure effects tests passed.")

@@ -33,7 +33,11 @@
 (define (insert-type-separators source)
   ;; Scan for `type X = {` or `interface X ... {` blocks, and within each,
   ;; add `;` at the end of member lines that lack a separator.
-  (define rx-type-start #px"(?:type|interface)\\s+\\w+\\s*(?:[^{]*?)\\s*\\{")
+  ;; `[^\n{]` keeps the `{` on the same line as the keyword (newline is excluded
+  ;; from the match), so prose like "import the interface below do:" cannot
+  ;; reach the `{` of a commented-out import on a later line (which corrupted
+  ;; `import { User }` into `import { User ;}`).
+  (define rx-type-start #px"(?:type|interface)\\s+\\w+[^\n{]*?\\{")
   (let loop ([s source] [start 0])
     (define m (regexp-match-positions rx-type-start s start (string-length s)))
     (if (not m)
@@ -72,7 +76,10 @@
    (for/list ([line (in-list lines)])
      (define trimmed (string-trim line))
      (cond [(equal? trimmed "") line]
-           [(regexp-match #rx"[{},;]\\s*$" trimmed) line]
+            ;; A trailing `}` closes a nested object type (e.g. `ogImage: {…}`);
+            ;; it still needs a member separator. Only `{`, `,`, `;` are already
+            ;; terminated (or open a nested block).
+            [(regexp-match #rx"[{,;]\\s*$" trimmed) line]
            [else (string-append line ";")]))
    "\n"))
 
