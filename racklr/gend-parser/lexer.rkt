@@ -285,47 +285,79 @@
   (define sl (string-length s))
   (if (and (<= (+ p sl) (string-length in))
            (string=? (substring in p (+ p sl)) s))
-      (list (+ p sl) s)
-      #f))
+      (list (list (+ p sl) s))
+      '()))
 
 (define (mrange lo hi p in)
-  (if (>= p (string-length in)) #f
+  (if (>= p (string-length in)) '()
       (let ([c (string-ref in p)])
-        (if (char<=? lo c hi) (list (+ p 1) (string c)) #f))))
+        (if (char<=? lo c hi) (list (list (+ p 1) (string c))) '()))))
 
 (define (mcclass pat p in)
-  (if (>= p (string-length in)) #f
+  (if (>= p (string-length in)) '()
       (let ([c (string-ref in p)])
-        (if (cc-match c pat) (list (+ p 1) (string c)) #f))))
+        (if (cc-match c pat) (list (list (+ p 1) (string c))) '()))))
 
 (define (mstar f p in)
   (let loop ([pp p] [a \"\"])
-    (define r (f pp in))
-    (if r (loop (car r) (string-append a (cadr r))) (list pp a))))
+    (let ([rs (f pp in)])
+      (if (null? rs)
+          (list (list pp a))
+          (append (append-map (lambda (r) (loop (car r) (string-append a (cadr r)))) rs)
+                  (list (list pp a)))))))
+
+(define (mstar-ng f p in)
+  (let loop ([pp p] [a \"\"])
+    (let ([rs (f pp in)])
+      (cons (list pp a)
+            (if (null? rs)
+                '()
+                (append-map (lambda (r) (loop (car r) (string-append a (cadr r)))) rs))))))
 
 (define (mplus f p in)
-  (define r (f p in))
-  (and r (let ([rest (mstar f (car r) in)])
-           (list (car rest) (string-append (cadr r) (cadr rest))))))
+  (let ([rs (f p in)])
+    (if (null? rs) '()
+        (append-map (lambda (r)
+                      (map (lambda (m) (list (car m) (string-append (cadr r) (cadr m))))
+                           (mstar f (car r) in)))
+                    rs))))
+
+(define (mplus-ng f p in)
+  (let ([rs (f p in)])
+    (if (null? rs) '()
+        (append-map (lambda (r)
+                      (map (lambda (m) (list (car m) (string-append (cadr r) (cadr m))))
+                           (mstar-ng f (car r) in)))
+                    rs))))
 
 (define (mopt f p in)
-  (define r (f p in))
-  (or r (list p \"\")))
+  (let ([rs (f p in)])
+    (if (null? rs) (list (list p \"\"))
+        (append rs (list (list p \"\"))))))
+
+(define (mopt-ng f p in)
+  (let ([rs (f p in)])
+    (if (null? rs) (list (list p \"\"))
+        (cons (list p \"\") rs))))
 
 (define (mnot f p in)
-  (if (>= p (string-length in)) #f
-      (let ([r (f p in)])
-        (if r #f (list (+ p 1) (string (string-ref in p)))))))
+  (if (>= p (string-length in)) '()
+      (let ([rs (f p in)])
+        (if (null? rs) (list (list (+ p 1) (string (string-ref in p)))) '()))))
 
 (define (malt fs p in)
   (let loop ([xs fs])
-    (and (pair? xs) (or ((car xs) p in) (loop (cdr xs))))))
+    (if (null? xs) '()
+        (let ([rs ((car xs) p in)])
+          (if (null? rs) (loop (cdr xs)) rs)))))
 
 (define (mseq fs p in)
-  (let loop ([xs fs] [pp p] [a \"\"])
-    (if (null? xs) (list pp a)
-        (let ([r ((car xs) pp in)])
-          (and r (loop (cdr xs) (car r) (string-append a (cadr r))))))))
+  (let loop ([xs fs] [acc (list (list p \"\"))])
+    (if (null? xs) acc
+        (loop (cdr xs)
+              (for*/list ([m (in-list acc)]
+                          [r (in-list ((car xs) (car m) in))])
+                (list (car r) (string-append (cadr m) (cadr r))))))))
 
 (define (cc-match c pat)
    (define pl (string-length pat))
@@ -417,23 +449,26 @@
     [(eq? tag 'token-ref)
       (define ref-name (any-tree-text elem))
       (if (string=? ref-name "EOF")
-          "(lambda (p i) (if (>= p (string-length i)) (list p \"EOF\") #f))"
+          "(lambda (p i) (if (>= p (string-length i)) (list (list p \"EOF\")) '()))"
           (format "~a-match" (mangle ref-name)))]
     [(eq? tag 'star)    (format "(lambda (p i) (mstar ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
     [(eq? tag 'plus)    (format "(lambda (p i) (mplus ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
     [(eq? tag 'optional) (format "(lambda (p i) (mopt ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
+    [(eq? tag 'star-ng) (format "(lambda (p i) (mstar-ng ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
+    [(eq? tag 'plus-ng) (format "(lambda (p i) (mplus-ng ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
+    [(eq? tag 'optional-ng) (format "(lambda (p i) (mopt-ng ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
     [(eq? tag 'negated)
      (define child (first (any-tree-children elem)))
      ;; If negation wraps a quantifier, swap: ~X+ => (~X)+
      (define child-tag (any-tree-tag child))
-     (if (memq child-tag '(star plus optional))
+     (if (memq child-tag '(star plus optional star-ng plus-ng optional-ng))
          (gen-match-elem (node child-tag (list (node 'negated (any-tree-children child)))))
          (format "(lambda (p i) (mnot ~a p i))" (gen-match-elem child)))]
     [(eq? tag 'group)
       (define sub-alts (any-tree-children elem))
       (format "(lambda (p i) ~a)" (gen-match-alt sub-alts))]
-    [(eq? tag 'action) (format "(lambda (p i) (list p \"\"))")] ;; skip actions in lexer
-    [(eq? tag 'any) (format "(lambda (p i) (mnot (lambda (p2 i2) #f) p i))")] ;; . matches any char
+    [(eq? tag 'action) (format "(lambda (p i) (list (list p \"\")))")] ;; action/predicate matches empty
+    [(eq? tag 'any) (format "(lambda (p i) (mnot (lambda (p2 i2) '()) p i))")] ;; . matches any char
     [else (error "unknown match elem tag:" tag)]))
 
 (define (build-mode-map lexer-rules mode-nodes implicit-rules)
@@ -497,10 +532,10 @@
    "                   (if __best-handle\n"
    "                       (__best-handle __best-np __best-v)\n"
     (format "                       (error 'tokenize \"no matching rule in mode ~a at ~~a:~~a\" l c))\n" mode-name)
-   "                   (let ([__r ((caar __rules) p in)])\n"
-   "                     (if (and __r (> (car __r) __best-np))\n"
-   "                         (__mloop (cdr __rules) (car __r) (cadr __r) (cdar __rules))\n"
-    "                         (__mloop (cdr __rules) __best-np __best-v __best-handle)))))]"))
+    "                   (let ([__r ((caar __rules) p in)])\n"
+    "                     (if (and (pair? __r) (> (caar __r) __best-np))\n"
+    "                         (__mloop (cdr __rules) (caar __r) (cadar __r) (cdar __rules))\n"
+     "                         (__mloop (cdr __rules) __best-np __best-v __best-handle)))))]"))
 
 (define (gen-token-clause rule)
   (define children (any-tree-children rule))
@@ -538,6 +573,12 @@
                 (define txt (any-tree-text cmd))
                 (cond [(string=? txt "skip")
                        (loop (cdr cmds) #t more? emit-type next-mode next-mstack next-pending)]
+                    [(string-prefix? txt "channel(")
+                     ;; channel(HIDDEN) (== channel(1)) tokens are invisible to the
+                     ;; parser; we have no channels, so treat them like `skip`.
+                     (define ch (substring txt 8 (sub1 (string-length txt))))
+                     (define hidden? (or (string=? ch "HIDDEN") (string=? ch "1")))
+                     (loop (cdr cmds) (or skip? hidden?) more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "pushMode(")
                      (define raw-mname (substring txt 9 (sub1 (string-length txt))))
                      (define mname (if (string=? raw-mname "DEFAULT_MODE") "default" raw-mname))

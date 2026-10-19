@@ -74,8 +74,9 @@
   (when (not cst) (error "parse returned #f"))
   cst)
 
-(define (assert-emitted out)
-  (when (or (not (string? out)) (equal? out "")) (error "emit returned non-string or empty"))
+(define (assert-emitted out #:allow-empty? [allow? #f])
+  (when (or (not (string? out)) (and (not allow?) (equal? out "")))
+    (error "emit returned non-string or empty"))
   out)
 
 (define (pipeline-json src)
@@ -107,7 +108,8 @@
 
 (define (pipeline-ts src)
   (define uir (lower-ts-src src))
-  (define out (assert-emitted (emit-javascript uir)))
+  ;; A type-only module erases to empty JS, which is valid.
+  (define out (assert-emitted (emit-javascript uir) #:allow-empty? #t))
   ;; one-way: emitted JS must re-parse as JavaScript
   (lower-program (assert-parsed (js-parse out)) js-tok-type js-tok-value)
   #t)
@@ -123,7 +125,7 @@
   (lower-hooks (restore-jsx ts-uir jsx-uir)))
 
 (define (pipeline-tsx src)
-  (define out (assert-emitted (emit-javascript (tsx->uir src))))
+  (define out (assert-emitted (emit-javascript (tsx->uir src)) #:allow-empty? #t))
   (lower-program (assert-parsed (js-parse out)) js-tok-type js-tok-value)
   #t)
 

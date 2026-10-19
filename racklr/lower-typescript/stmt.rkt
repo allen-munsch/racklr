@@ -73,6 +73,10 @@
 
   ;; Check for export { x, y } — inner statement is a block
   (cond
+    ;; Type-only declarations have no runtime representation: erase them
+    ;; instead of emitting `export null;`.
+    [(memq (tag-of inner-stmt) '(typeAliasDeclaration interfaceDeclaration))
+     #f]
     [(eq? (tag-of inner-stmt) 'block)
      (lower-export-named-block inner-stmt tk-type tk-value)]
 
@@ -180,8 +184,8 @@
     [(enumDeclaration) (lower-enum-decl node tk-type tk-value)]
     [(namespaceDeclaration) (lower-namespace-decl node tk-type tk-value)]
     [(abstractDeclaration) (lower-abstract-decl node tk-type tk-value)]
-    [(interfaceDeclaration) (uir-null)]
-    [(typeAliasDeclaration) (uir-null)]
+    [(interfaceDeclaration) #f]
+    [(typeAliasDeclaration) #f]
     [else (uir-null)]))
 
 (define (lower-expr-stmt node tk-type tk-value)
@@ -422,13 +426,14 @@
     ;; Try various paths to find the identifier name
     ;; k could be parameter, requiredParameter, optionalParameter, restParameter, formalParameterArg
     (define (find-ident n)
-      (or (find-kid n 'identifierOrPattern)
-          (find-kid n 'identifierName)
-          (find-kid n 'identifier)
-          (and (member (tag-of n) '(parameter formalParameterArg restParameter))
-               (or (find-ident (find-kid n 'requiredParameter))
-                   (find-ident (find-kid n 'optionalParameter))
-                   (find-ident (find-kid n 'restParameter))))))
+      (and n
+           (or (find-kid n 'identifierOrPattern)
+               (find-kid n 'identifierName)
+               (find-kid n 'identifier)
+               (and (member (tag-of n) '(parameter formalParameterArg restParameter))
+                    (or (find-ident (find-kid n 'requiredParameter))
+                        (find-ident (find-kid n 'optionalParameter))
+                        (find-ident (find-kid n 'restParameter)))))))
     (define io (find-ident k))
     (if (and io (not (find-kid io 'bindingPattern)))
         ;; Simple param (not destructured) - extract token name directly

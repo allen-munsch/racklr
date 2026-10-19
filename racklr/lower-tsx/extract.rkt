@@ -44,11 +44,14 @@
           [(and (eq? state 'in-tag-name) (char=? (string-ref s pos) #\>))
            (scan (+ pos 1) depth brace-depth #f 'in-children)]
           
-          ;; Handle string literals first (any state)
-          [(or (char=? (string-ref s pos) #\')
-               (char=? (string-ref s pos) #\"))
-           (scan (advance-past-string s pos (string-ref s pos))
-                 depth brace-depth in-expr state)]
+           ;; Handle string literals — but only inside a JSX expression
+           ;; ({...}) or an opening tag (attribute values). In children text
+           ;; a quote is literal (e.g. `I'm`), not a string delimiter.
+           [(and (or in-expr (eq? state 'in-tag-name))
+                 (or (char=? (string-ref s pos) #\')
+                     (char=? (string-ref s pos) #\")))
+            (scan (advance-past-string s pos (string-ref s pos))
+                  depth brace-depth in-expr state)]
           
           ;; Handle expression braces in JSX children/attrs
           [(char=? (string-ref s pos) #\{)
