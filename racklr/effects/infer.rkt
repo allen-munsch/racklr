@@ -13,7 +13,8 @@
 ;;     modality 'unknown, deferred to runtime
 
 (require racklr/uir
-         racklr/effects/contract)
+         racklr/effects/contract
+         racklr/effects/ts-annot)
 
 (provide
   infer-effects
@@ -357,8 +358,19 @@
     (if c
         (uir-call (uir-symbol "__withEffects") (list c val))
         val))
+  ;; A hand-written `withEffects(row)(fn)` annotation declares its row
+  ;; explicitly. Rewrite it into the internal __withEffects(row, fn) call the
+  ;; JS emitter renders, so it is guarded like any other effect row and
+  ;; program-has-effects? sees the embedded uir-effect-row.
+  (define (rewrite-with-effects val)
+    (define row (extract-with-effects-row val))
+    (define fn (extract-with-effects-fn val))
+    (if row
+        (uir-call (uir-symbol "__withEffects") (list row fn))
+        val))
   (define (rewrite-value val nm)
     (cond
+      [(with-effects-call? val) (rewrite-with-effects val)]
       [(uir-fn? val) (with-effects val nm)]
       [(and (uir-call? val)
             (uir-symbol? (uir-call-callee val))
@@ -389,6 +401,7 @@
             (= (length (uir-call-args n)) 1))
        (struct-copy uir-call n
                     [args (list (rewrite (first (uir-call-args n))))])]
+      [(with-effects-call? n) (rewrite-with-effects n)]
       [else n]))
   (cond
     [(list? program) (map rewrite program)]

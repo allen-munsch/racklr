@@ -170,3 +170,29 @@ Done:
   (5 new infer tests + 2 annotate tests), `effects-js-emit-test` (5 new), all
   effect suites, `lower-typescript-test`, `lower-python-test`,
   `esbuild-integration-test`, `emit-html-test`, `examples-roundtrip-test` 44/44.
+- Iteration 9 (DONE): wired the TS/JS `withEffects(row)(fn)` annotation into
+  the pipeline. The iteration-4 extraction (`effects/ts-annot.rkt`) was only
+  unit-tested on hand-built UIR; a real `withEffects({...})(fn)` in TS source
+  lowered to `(call (call (var withEffects) (list ROW)) (list FN))` and then
+  round-tripped as a call to an undefined `withEffects` — no guard, no
+  preamble. `annotate-effects` now rewrites that shape (both as a `set!` value
+  and as a bare expression statement) into the internal
+  `(call "__withEffects" (list row fn))`, so `program-has-effects?` sees the
+  embedded `uir-effect-row` and `emit-javascript` renders the guard. Verified:
+  `effects-js-emit-test` (2 new tests), all effect suites,
+  `lower-typescript-test`, `lower-python-test`, `examples-roundtrip-test`
+  44/44, `esbuild-integration-test`, `emit-html-test`. End-to-end:
+  `const f = withEffects({llm:{max:5}})(() => llm.query("hi"))` →
+  `const f = __withEffects({"llm":{"modality":"may","max":5}}, () => llm.query("hi"))`
+  with the preamble.
+
+## Still open (next iterations)
+
+- **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
+  generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
+  no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
+- **Runtime enforcement** — `__withEffects` / `__validate_effects` validate the
+  row's *shape* and attach `fn.__effects__`, but do not yet enforce `max`
+  budgets, `must` obligations, or `must-not`/scope prohibitions against the
+  operations a function actually performs. This is the "effect handler"
+  half of the goal and the natural next non-trivial slice.

@@ -100,6 +100,18 @@
             (list (uir-list '())
                   (uir-call (jsdot (v "llm") "query") (list (uir-string "hi"))))))
 
+(define (record . pairs)
+  (uir-record (map (λ (p) (cons (uir-string (car p)) (cadr p))) pairs)))
+
+;; (call (call (var withEffects) (list ROW)) (list FN)) — the UIR shape a
+;; hand-written TS/JS `withEffects(row)(fn)` annotation lowers to.
+(define (with-effects-wrapper row fn)
+  (uir-call (uir-call (uir-var (sym "withEffects")) (list row))
+            (list fn)))
+
+(define (llm-constraint-record)
+  (record (list "llm" (record (list "max" (uir-number "5"))))))
+
 (define (test-const-arrow-emits-guard)
   (define out (emit-javascript (decl (var-decl "const" (uir-set! (sym "f") (llm-arrow))))))
   (check-true (string-contains? out "function __withEffects")
@@ -137,6 +149,28 @@
   (check-false (string-contains? out "__withEffects")
                "pure const-bound arrow emits no guard"))
 
+(define (test-withEffects-annotation-emits-guard)
+  (define w (with-effects-wrapper (llm-constraint-record) (llm-arrow)))
+  (define out (emit-javascript (decl (var-decl "const" (uir-set! (sym "summarize") w)))))
+  (check-true (string-contains? out "function __withEffects")
+              "preamble emitted for a withEffects annotation")
+  (check-true (string-contains? out "const summarize = __withEffects(")
+              "withEffects annotation becomes a guarded declaration")
+  (check-true (string-contains? out "\"llm\"")
+              "row name emitted")
+  (check-true (string-contains? out "\"max\": 5")
+              "budget emitted")
+  (check-true (string-contains? out "() => llm.query(\"hi\")")
+              "wrapped arrow body preserved"))
+
+(define (test-bare-withEffects-emits-guard)
+  (define w (with-effects-wrapper (llm-constraint-record) (llm-arrow)))
+  (define out (emit-javascript (decl w)))
+  (check-true (string-contains? out "function __withEffects")
+              "preamble emitted for a bare withEffects annotation")
+  (check-true (string-contains? out "__withEffects(")
+              "bare withEffects wrapper rendered as the guard"))
+
 (module+ main
   (test-no-effects-no-preamble)
   (test-declaration-with-effects-emits-guard)
@@ -149,4 +183,6 @@
   (test-var-arrow-emits-guard)
   (test-const-function-expr-emits-guard)
   (test-const-pure-arrow-no-guard)
+  (test-withEffects-annotation-emits-guard)
+  (test-bare-withEffects-emits-guard)
   (displayln "All JS emit effect-guard tests passed."))
