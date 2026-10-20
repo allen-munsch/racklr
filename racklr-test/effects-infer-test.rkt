@@ -10,6 +10,8 @@
 (define (sym s) (uir-symbol s))
 (define (v s) (uir-var (uir-symbol s)))
 (define (dot b f) (uir-get b (uir-symbol f)))
+;; JS/TS/JSX lower `a.b` to (call (symbol "dot") (list a b)), not uir-get.
+(define (jsdot b f) (uir-call (sym "dot") (list b (sym f))))
 
 (define (fn name body #:params [params '()])
   (uir-fn (if name (uir-symbol name) #f) params body #f #f))
@@ -115,6 +117,84 @@
   (check-equal? (modality r 'llm) 'may)
   (check-equal? (row-names r) '(llm)))
 
+(define (test-httpx-network)
+  (define p (prog (fn "f" (uir-call (dot (v "httpx") "get") (list (uir-string "/x"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'network) 'may))
+
+(define (test-requests-network)
+  (define p (prog (fn "f" (uir-call (dot (v "requests") "get") (list (uir-string "/x"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'network) 'may))
+
+(define (test-redis-cache)
+  (define p (prog (fn "f" (uir-call (dot (v "redis") "get") (list (uir-string "k"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'cache) 'may))
+
+(define (test-anthropic-llm)
+  (define p (prog (fn "f" (uir-call (dot (dot (v "anthropic") "messages") "create") '()))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-agno-llm)
+  (define p (prog (fn "f" (uir-call (dot (dot (v "agno") "agent") "Agent") '()))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-langgraph-llm)
+  (define p (prog (fn "f" (uir-call (dot (dot (v "langgraph") "graph") "StateGraph") '()))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-django-objects-string-field)
+  ;; The Python lowerer emits attribute names as uir-string (not uir-symbol);
+  ;; the `objects` heuristic must accept that form too.
+  (define p (prog (fn "q"
+                      (uir-call (uir-get (uir-get (v "Order") (uir-string "objects"))
+                                         (uir-string "all"))
+                                '()))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'q) 'db) 'may))
+
+;; ── JS/TS/JSX `dot`-encoded member access ───────────────────────────
+
+(define (test-js-dot-axios-network)
+  (define p (prog (fn "f" (uir-call (jsdot (v "axios") "get")
+                                    (list (uir-string "/x"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'network) 'may))
+
+(define (test-js-dot-db-db)
+  (define p (prog (fn "f" (uir-call (jsdot (v "db") "query")
+                                    (list (uir-string "SELECT 1"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'db) 'may))
+
+(define (test-js-dot-model-objects-db)
+  (define p (prog (fn "q"
+                      (uir-call (jsdot (jsdot (v "User") "objects") "filter")
+                                (list (uir-record '()))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'q) 'db) 'may))
+
+(define (test-js-dot-redis-cache)
+  (define p (prog (fn "f" (uir-call (jsdot (v "redis") "get")
+                                    (list (uir-string "k"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'cache) 'may))
+
+(define (test-js-dot-anthropic-llm)
+  (define p (prog (fn "f" (uir-call (jsdot (jsdot (v "anthropic") "messages") "create")
+                                    '()))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-js-dot-bare-fetch-network)
+  ;; A bare callee (non-dotted) still classifies: fetch(...) → network.
+  (define p (prog (fn "f" (uir-call (v "fetch") (list (uir-string "/x"))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'network) 'may))
+
+;; ── synthetic operator/statement calls are pure, not `unknown` ──────
+
+(define (test-synthetic-operator-pure)
+  (define p (prog (fn "f" (uir-call (sym "+")
+                                    (list (uir-number "1") (uir-number "2"))))))
+  (check-equal? (hash-ref (infer-effects p) 'f) (empty-row)))
+
+(define (test-synthetic-dot-pure)
+  ;; A bare member access (not itself an effectful call) is pure.
+  (define p (prog (fn "f" (jsdot (v "x") "y"))))
+  (check-equal? (hash-ref (infer-effects p) 'f) (empty-row)))
+
 (define (test-annotate-writes-back)
   (define p (prog (fn "summarize"
                       (uir-call (dot (v "llm") "query")
@@ -137,5 +217,20 @@
   (test-higher-order-unknown)
   (test-nested-fn-does-not-leak)
   (test-recursion-converges)
+  (test-httpx-network)
+  (test-requests-network)
+  (test-redis-cache)
+  (test-anthropic-llm)
+  (test-agno-llm)
+  (test-langgraph-llm)
+  (test-django-objects-string-field)
+  (test-js-dot-axios-network)
+  (test-js-dot-db-db)
+  (test-js-dot-model-objects-db)
+  (test-js-dot-redis-cache)
+  (test-js-dot-anthropic-llm)
+  (test-js-dot-bare-fetch-network)
+  (test-synthetic-operator-pure)
+  (test-synthetic-dot-pure)
   (test-annotate-writes-back)
   (displayln "All infer tests passed."))

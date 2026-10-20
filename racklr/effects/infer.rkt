@@ -61,6 +61,7 @@
   (let loop ([c c])
     (cond
       [(uir-get? c) (loop (uir-get-base c))]
+      [(dot-call? c) (loop (first (uir-call-args c)))]
       [(uir-var? c) (symbol-root (uir-symbol-name (uir-var-name c)))]
       [(uir-symbol? c) (symbol-root (uir-symbol-name c))]
       [else #f])))
@@ -72,14 +73,34 @@
           [(char=? (string-ref name i) #\/) (string->symbol (substring name 0 i))]
           [else (loop (add1 i))])))
 
-;; Does a dotted chain contain a `uir-get` whose field is `field-name`?
+;; A JS/TS/JSX member access: `a.b` lowers to (call (symbol "dot") (list a b)).
+(define (dot-call? c)
+  (and (uir-call? c)
+       (uir-symbol? (uir-call-callee c))
+       (string=? (uir-symbol-name (uir-call-callee c)) "dot")
+       (= (length (uir-call-args c)) 2)))
+
+;; Field name of a `uir-get` as a symbol. Front ends differ on whether an
+;; attribute name is a uir-symbol or a uir-string, so accept both.
+(define (get-field-symbol f)
+  (cond
+    [(uir-symbol? f) (string->symbol (uir-symbol-name f))]
+    [(uir-string? f) (string->symbol (uir-string-value f))]
+    [else #f]))
+
+;; Does a dotted chain contain a field access named `field-name`? Handles both
+;; the Python uir-get encoding and the JS/TS (call "dot" ...) encoding.
 (define (dotted-has-field? c field-name)
   (let loop ([c c])
     (cond
       [(uir-get? c)
-       (or (and (uir-symbol? (uir-get-field c))
-                (eq? (string->symbol (uir-symbol-name (uir-get-field c))) field-name))
+       (or (eq? (get-field-symbol (uir-get-field c)) field-name)
            (loop (uir-get-base c)))]
+      [(dot-call? c)
+       (define field (second (uir-call-args c)))
+       (or (and (uir-symbol? field)
+                (string=? (uir-symbol-name field) (symbol->string field-name)))
+           (loop (first (uir-call-args c))))]
       [else #f])))
 
 ;; Simple (non-dotted) callee name: a uir-var or uir-symbol.
@@ -94,27 +115,57 @@
   (define root (dotted-root c))
   (define nm (callee-name c))
   (cond
-    [(and root (memq root '(llm openai))) 'llm]
-    [(and root (memq root '(db database sql))) 'db]
+    [(and root (memq root '(llm openai anthropic cohere ollama groq agno langgraph langchain llamaindex))) 'llm]
+    [(and root (memq root '(db database sql sqlalchemy sqlmodel asyncpg psycopg))) 'db]
     [(dotted-has-field? c 'objects) 'db]  ;; Django Model.objects
-    [(and root (memq root '(fetch axios))) 'network]
+    [(and root (memq root '(fetch axios httpx requests aiohttp urllib))) 'network]
     [(and nm (memq nm '(fetch axios))) 'network]
+    [(and root (memq root '(redis memcache cache))) 'cache]
     [(and nm (memq nm '(revalidatePath revalidate_path invalidate clearCache purgeCache))) 'cache]
     [else #f]))
 
 ;; Classify a call callee against the known function names:
 ;;   (cons 'edge name)     — call to a function in the program
+;;   (cons 'pure #f)       — front-end-encoded construct (operator/builtin)
 ;;   (cons 'effect name)   — directly-detected effect
 ;;   (cons 'unknown #f)    — unresolvable (higher-order / IIFE)
 (define (classify-call callee known-names)
   (define nm (callee-name callee))
   (cond
     [(and nm (hash-has-key? known-names nm)) (cons 'edge nm)]
+    [(synthetic-callee? callee) (cons 'pure #f)]
     [else
      (define eff (direct-effect-of-callee callee))
      (cond
        [eff (cons 'effect eff)]
        [else (cons 'unknown #f)])]))
+
+;; Operator / statement / special-form names the front ends encode as literal
+;; `(uir-call (uir-symbol NAME) ...)`. These are language constructs, not
+;; runtime-dispatched functions, so they perform no effect and are not
+;; `unknown`. (Real calls lower to a uir-var callee in Python/TS and are
+;; checked against known-names before reaching here.)
+(define synthetic-callees
+  (set
+   ;; JS/TS/JSX structural calls
+   "dot" "index" "while" "dowhile" "with" "for" "forin" "forof" "switch"
+   "break" "continue" "debugger" "label" "regex" "function" "async-fn"
+   "gen-fn" "import" "export" "throw" "try" "=>" "var" "let" "const"
+   "void" "typeof" "delete" "array-bind" "object-bind"
+   ;; arithmetic / comparison / assignment / logical / unary
+   "+" "-" "*" "/" "%" "=" "==" "===" "!=" "!==" "<" ">" "<=" ">="
+   "&&" "||" "**" "+=" "-=" "*=" "/=" "**=" "!" "~" "&" "|" "^"
+   "<<" ">>" ">>>" "postfix++" "postfix--" "prefix++" "prefix--"
+   ;; Python structural calls and comprehensions
+   "not" "tuple" "set" "list" "assert" "raise" "del" "global" "nonlocal"
+   "list-comp" "dict-comp" "set-comp" "gen-comp"
+   ;; Clojure special forms / data constructors
+   "quote" "syntax-quote" "unquote" "unquote-splicing" "deref" "var"
+   "vector" "hash-set" "fn*" "with-meta" "namespace" "host-expr"))
+
+(define (synthetic-callee? c)
+  (and (uir-symbol? c)
+       (set-member? synthetic-callees (uir-symbol-name c))))
 
 ;; ── rows ────────────────────────────────────────────────────────────
 
@@ -183,6 +234,7 @@
             (case (car cls)
               [(edge) (set! callees (cons (cdr cls) callees))]
               [(effect) (set! effects (cons (cdr cls) effects))]
+              [(pure) (void)]
               [(unknown) (set! effects (cons 'unknown effects))]))
           (void)))
     (walk-body (uir-fn-body fn) visit!)
