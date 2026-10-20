@@ -44,6 +44,7 @@
 (define (walk-body n visit!)
   (cond
     [(uir-fn? n) (void)]
+    [(arrow-call? n) (void)]
     [(struct? n)
      (visit! n)
      (for ([f (in-list (cdr (vector->list (struct->vector n))))])
@@ -78,6 +79,13 @@
   (and (uir-call? c)
        (uir-symbol? (uir-call-callee c))
        (string=? (uir-symbol-name (uir-call-callee c)) "dot")
+       (= (length (uir-call-args c)) 2)))
+
+;; A JS/TS/JSX arrow function expression: (call "=>" (list params body)).
+(define (arrow-call? c)
+  (and (uir-call? c)
+       (uir-symbol? (uir-call-callee c))
+       (string=? (uir-symbol-name (uir-call-callee c)) "=>")
        (= (length (uir-call-args c)) 2)))
 
 ;; Field name of a `uir-get` as a symbol. Front ends differ on whether an
@@ -167,6 +175,37 @@
   (and (uir-symbol? c)
        (set-member? synthetic-callees (uir-symbol-name c))))
 
+;; ── JS/TS/JSX function encodings ───────────────────────────────────
+
+;; The uir-fn wrapped by a JS/TS function value: either the fn itself, or
+;; (call "async-fn"/"gen-fn" (list fn)). Returns #f otherwise.
+(define (wrapped-fn val)
+  (cond
+    [(uir-fn? val) val]
+    [(and (uir-call? val)
+          (uir-symbol? (uir-call-callee val))
+          (member (uir-symbol-name (uir-call-callee val)) '("async-fn" "gen-fn"))
+          (= (length (uir-call-args val)) 1)
+          (uir-fn? (first (uir-call-args val))))
+     (first (uir-call-args val))]
+    [else #f]))
+
+;; (name . body) for a named JS/TS function definition:
+;;   (set! NAME (fn #f ...))                       — function declaration
+;;   (set! NAME (call "async-fn"/"gen-fn" (fn)))   — async / generator decl
+;;   (set! NAME (call "=>" (list params body)))    — arrow bound to a name
+;; Returns #f for anything else.
+(define (named-function n)
+  (and (uir-set!? n)
+       (uir-symbol? (uir-set!-name n))
+       (let* ([nm (string->symbol (uir-symbol-name (uir-set!-name n)))]
+              [val (uir-set!-value n)]
+              [fn (wrapped-fn val)])
+         (cond
+           [fn (cons nm (uir-fn-body fn))]
+           [(arrow-call? val) (cons nm (second (uir-call-args val)))]
+           [else #f]))))
+
 ;; ── rows ────────────────────────────────────────────────────────────
 
 (define (empty-row)
@@ -203,16 +242,21 @@
 
 ;; ── collection and fixpoint ─────────────────────────────────────────
 
-;; name-symbol → uir-fn node, for every named uir-fn reachable from `program`.
+;; name-symbol → function body, for every named function reachable from
+;; `program`: named uir-fn nodes plus the JS/TS `set!`-bound encodings
+;; (function declarations, async/generator declarations, and bound arrows).
 (define (collect-functions program)
   (define h (make-hash))
   (define (visit! n)
-    (if (uir-fn? n)
-        (let ([nm (uir-fn-name n)])
-          (if (and nm (uir-symbol? nm))
-              (hash-set! h (string->symbol (uir-symbol-name nm)) n)
-              (void)))
-        (void)))
+    (cond
+      [(uir-fn? n)
+       (let ([nm (uir-fn-name n)])
+         (if (and nm (uir-symbol? nm))
+             (hash-set! h (string->symbol (uir-symbol-name nm)) (uir-fn-body n))
+             (void)))]
+      [(named-function n)
+       => (λ (p) (hash-set! h (car p) (cdr p)))]
+      [else (void)]))
   (walk-uir program visit!)
   h)
 
@@ -225,7 +269,7 @@
   (define direct-rows (make-hash))  ;; name → uir-effect-row (direct only)
   (define edges (make-hash))        ;; name → (listof name-symbol)
 
-  (for ([(n fn) (in-hash fns)])
+  (for ([(n body) (in-hash fns)])
     (define effects '())
     (define callees '())
     (define (visit! node)
@@ -237,7 +281,7 @@
               [(pure) (void)]
               [(unknown) (set! effects (cons 'unknown effects))]))
           (void)))
-    (walk-body (uir-fn-body fn) visit!)
+    (walk-body body visit!)
     (hash-set! direct-rows n (effects->row effects))
     (hash-set! edges n (sort (remove-duplicates callees) symbol<?)))
 
@@ -264,29 +308,45 @@
 
 ;; ── write-back ──────────────────────────────────────────────────────
 
-;; Rewrite a program so every top-level named uir-fn carries its inferred
-;; effect row in the `effects` field.
+;; Rewrite a program so every named function carries its inferred effect row
+;; in the `effects` field: named uir-fn nodes, plus the JS/TS `set!`-bound
+;; function declarations (writing back into the wrapped uir-fn).
 (define (annotate-effects program)
   (define rows (infer-effects program))
-  (define (rewrite-fn n)
-    (if (uir-fn? n)
-        (let ([nm (uir-fn-name n)])
-          (if (and nm (uir-symbol? nm))
-              (struct-copy uir-fn n
-                           [effects (hash-ref rows
-                                              (string->symbol (uir-symbol-name nm))
-                                              (uir-fn-effects n))])
-              n))
-        n))
+  (define (with-effects fn nm)
+    (struct-copy uir-fn fn [effects (hash-ref rows nm (uir-fn-effects fn))]))
+  (define (rewrite-value val nm)
+    (cond
+      [(uir-fn? val) (with-effects val nm)]
+      [(and (uir-call? val)
+            (uir-symbol? (uir-call-callee val))
+            (member (uir-symbol-name (uir-call-callee val)) '("async-fn" "gen-fn"))
+            (= (length (uir-call-args val)) 1)
+            (uir-fn? (first (uir-call-args val))))
+       (struct-copy uir-call val
+                    [args (list (with-effects (first (uir-call-args val)) nm))])]
+      [else val]))
+  (define (rewrite n)
+    (cond
+      [(uir-fn? n)
+       (let ([nm (uir-fn-name n)])
+         (if (and nm (uir-symbol? nm))
+             (with-effects n (string->symbol (uir-symbol-name nm)))
+             n))]
+      [(and (uir-set!? n) (uir-symbol? (uir-set!-name n)))
+       (struct-copy uir-set! n
+                    [value (rewrite-value (uir-set!-value n)
+                                          (string->symbol (uir-symbol-name (uir-set!-name n))))])]
+      [else n]))
   (cond
-    [(list? program) (map rewrite-fn program)]
+    [(list? program) (map rewrite program)]
     [(uir-block? program)
      (struct-copy uir-block program
-                  [stmts (map rewrite-fn (uir-block-stmts program))])]
+                  [stmts (map rewrite (uir-block-stmts program))])]
     [(uir-module? program)
      (struct-copy uir-module program
-                  [body (map rewrite-fn (uir-module-body program))])]
-    [else (rewrite-fn program)]))
+                  [body (map rewrite (uir-module-body program))])]
+    [else (rewrite program)]))
 
 (module+ main
   (displayln "racklr/effects/infer — effect inference loaded."))

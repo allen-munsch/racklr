@@ -204,6 +204,77 @@
   (check-true (uir-fn? f))
   (check-equal? (modality (uir-fn-effects f) 'llm) 'may))
 
+;; ── JS/TS function-declaration encodings ────────────────────────────
+;; TS lowers `function NAME(...) {...}` to (set! NAME (fn #f ...)),
+;; async to (set! NAME (call "async-fn" (list (fn #f ...)))), generator to
+;; (set! NAME (call "gen-fn" (list (fn #f ...)))). collect-functions must key
+;; these by the set! name, not by a uir-fn name.
+
+(define (test-set!-fn-decl-collected)
+  (define p (prog (uir-set! (sym "summarize")
+                            (fn #f (uir-call (dot (v "llm") "query")
+                                             (list (uir-string "hi")))))))
+  (define r (hash-ref (infer-effects p) 'summarize))
+  (check-equal? (modality r 'llm) 'may)
+  (check-equal? (row-names r) '(llm)))
+
+(define (test-set!-async-fn-decl)
+  (define inner (fn #f (uir-call (dot (v "llm") "query")
+                                 (list (uir-string "hi")))))
+  (define p (prog (uir-set! (sym "summarize")
+                            (uir-call (sym "async-fn") (list inner)))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'summarize) 'llm) 'may))
+
+(define (test-set!-gen-fn-decl)
+  (define inner (fn #f (uir-call (dot (v "llm") "query")
+                                 (list (uir-string "hi")))))
+  (define p (prog (uir-set! (sym "summarize")
+                            (uir-call (sym "gen-fn") (list inner)))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'summarize) 'llm) 'may))
+
+(define (test-set!-fn-annotate-writes-back)
+  (define p (prog (uir-set! (sym "summarize")
+                            (fn #f (uir-call (dot (v "llm") "query")
+                                             (list (uir-string "hi")))))))
+  (define annotated (annotate-effects p))
+  (define decl (car (uir-block-stmts annotated)))
+  (check-true (uir-set!? decl))
+  (define f (uir-set!-value decl))
+  (check-true (uir-fn? f))
+  (check-equal? (modality (uir-fn-effects f) 'llm) 'may))
+
+(define (test-set!-async-fn-annotate-writes-back)
+  (define inner (fn #f (uir-call (dot (v "llm") "query")
+                                 (list (uir-string "hi")))))
+  (define p (prog (uir-set! (sym "summarize")
+                            (uir-call (sym "async-fn") (list inner)))))
+  (define annotated (annotate-effects p))
+  (define decl (car (uir-block-stmts annotated)))
+  (define wrap (uir-set!-value decl))
+  (check-true (uir-call? wrap))
+  (define f (first (uir-call-args wrap)))
+  (check-true (uir-fn? f))
+  (check-equal? (modality (uir-fn-effects f) 'llm) 'may))
+
+;; ── JS/TS arrow-function encodings ──────────────────────────────────
+;; TS lowers `(...) => body` to (call "=>" (list params body)). The body is a
+;; nested function boundary, and an arrow bound to a name via set! is a named
+;; function for inference.
+
+(define (test-arrow-boundary-does-not-leak)
+  (define arrow (uir-call (sym "=>")
+                          (list (uir-list '())
+                                (uir-call (jsdot (v "llm") "query") '()))))
+  (define p (prog (fn "outer" (uir-block (list arrow (uir-null))))))
+  (check-equal? (hash-ref (infer-effects p) 'outer) (empty-row)))
+
+(define (test-set!-arrow-inferred)
+  (define p (prog (uir-set! (sym "f")
+                            (uir-call (sym "=>")
+                                      (list (uir-list '())
+                                            (uir-call (jsdot (v "llm") "query") '()))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
 (module+ main
   (test-empty-program)
   (test-lambda-not-collected)
@@ -233,4 +304,11 @@
   (test-synthetic-operator-pure)
   (test-synthetic-dot-pure)
   (test-annotate-writes-back)
+  (test-set!-fn-decl-collected)
+  (test-set!-async-fn-decl)
+  (test-set!-gen-fn-decl)
+  (test-set!-fn-annotate-writes-back)
+  (test-set!-async-fn-annotate-writes-back)
+  (test-arrow-boundary-does-not-leak)
+  (test-set!-arrow-inferred)
   (displayln "All infer tests passed."))
