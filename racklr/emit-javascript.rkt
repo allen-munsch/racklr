@@ -288,16 +288,23 @@
                     (format " finally { ~a }" (emit-body (fourth args)))))
               (string-append try-str catch-str finally-str)]
              [(and op-name (string=? op-name "=>") (= (length args) 2))
-              (define params-uir (first args))
-              (define body-expr (second args))
-              (define param-str
-                (if (uir-list? params-uir)
-                    (string-join (map emit-js (uir-list-items params-uir)) ", ")
-                    (emit-js params-uir)))
-              (define body-str (emit-js body-expr))
-              (if (uir-block? body-expr)
-                  (format "(~a) => { ~a }" param-str (emit-body body-expr))
-                  (format "(~a) => ~a" param-str body-str))]
+               (define params-uir (first args))
+               (define body-expr (second args))
+               (define param-str
+                 (if (uir-list? params-uir)
+                     (string-join (map emit-js (uir-list-items params-uir)) ", ")
+                     (emit-js params-uir)))
+               (define body-str (emit-js body-expr))
+               (if (uir-block? body-expr)
+                   (format "(~a) => { ~a }" param-str (emit-body body-expr))
+                   (format "(~a) => ~a" param-str body-str))]
+            [(and op-name (string=? op-name "__withEffects") (= (length args) 2))
+             ;; annotate-effects wraps an inferred arrow/function expression in
+             ;; (call "__withEffects" (list row fn)) so the emitter can render
+             ;; the runtime guard around a function value with no effects slot.
+             (format "__withEffects(~a, ~a)"
+                     (emit-effect-row (first args))
+                     (emit-js (second args)))]
             [(and op-name (set-member? (set "var" "let" "const") op-name) (= (length args) 1))
              (emit-declaration op-name (first args))]
             [(and op-name (= (length args) 1) (set-member? postfix-ops op-name))
@@ -605,6 +612,7 @@
 
 (define (program-has-effects? uir)
   (cond
+    [(uir-effect-row? uir) #t]
     [(struct? uir)
      (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])

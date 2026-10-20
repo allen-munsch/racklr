@@ -88,6 +88,55 @@
   (check-true (string-contains? out "\"llm\"")
               "inferred llm row emitted"))
 
+;; const/let/var-bound arrows and function expressions: inference collects them
+;; (the set! sits inside the var-decl call) and annotate-effects wraps the value
+;; in __withEffects, so the guard surfaces end-to-end.
+
+(define (var-decl kind binding)
+  (uir-call (sym kind) (list binding)))
+
+(define (llm-arrow)
+  (uir-call (sym "=>")
+            (list (uir-list '())
+                  (uir-call (jsdot (v "llm") "query") (list (uir-string "hi"))))))
+
+(define (test-const-arrow-emits-guard)
+  (define out (emit-javascript (decl (var-decl "const" (uir-set! (sym "f") (llm-arrow))))))
+  (check-true (string-contains? out "function __withEffects")
+              "preamble emitted for a const-bound arrow")
+  (check-true (string-contains? out "const f = __withEffects(")
+              "const-bound arrow wrapped through the guard")
+  (check-true (string-contains? out "() => llm.query(\"hi\")")
+              "arrow body preserved inside the guard"))
+
+(define (test-let-arrow-emits-guard)
+  (define out (emit-javascript (decl (var-decl "let" (uir-set! (sym "f") (llm-arrow))))))
+  (check-true (string-contains? out "let f = __withEffects(")
+              "let-bound arrow wrapped through the guard"))
+
+(define (test-var-arrow-emits-guard)
+  (define out (emit-javascript (decl (var-decl "var" (uir-set! (sym "f") (llm-arrow))))))
+  (check-true (string-contains? out "var f = __withEffects(")
+              "var-bound arrow wrapped through the guard"))
+
+(define (test-const-function-expr-emits-guard)
+  (define fexpr (uir-call (sym "function")
+                          (list (uir-list '())
+                                (uir-call (jsdot (v "llm") "query") (list (uir-string "hi"))))))
+  (define out (emit-javascript (decl (var-decl "const" (uir-set! (sym "f") fexpr)))))
+  (check-true (string-contains? out "const f = __withEffects(")
+              "const-bound function expression wrapped through the guard")
+  (check-true (string-contains? out "function() {")
+              "function expression preserved inside the guard"))
+
+(define (test-const-pure-arrow-no-guard)
+  (define arrow (uir-call (sym "=>")
+                          (list (uir-list '())
+                                (uir-call (sym "+") (list (uir-number "1") (uir-number "2"))))))
+  (define out (emit-javascript (decl (var-decl "const" (uir-set! (sym "f") arrow)))))
+  (check-false (string-contains? out "__withEffects")
+               "pure const-bound arrow emits no guard"))
+
 (module+ main
   (test-no-effects-no-preamble)
   (test-declaration-with-effects-emits-guard)
@@ -95,4 +144,9 @@
   (test-async-declaration-with-effects)
   (test-empty-row-still-guarded)
   (test-inferred-effects-emit-guard)
+  (test-const-arrow-emits-guard)
+  (test-let-arrow-emits-guard)
+  (test-var-arrow-emits-guard)
+  (test-const-function-expr-emits-guard)
+  (test-const-pure-arrow-no-guard)
   (displayln "All JS emit effect-guard tests passed."))

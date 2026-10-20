@@ -64,6 +64,13 @@ Done:
 - `lower-javascript-test.rkt` fails pre-existing (confirmed via `git stash`):
   `cst-node-children: contract violation, expected: cst-node?`. A JS lowering
   bug, not effects-related.
+- **Async arrows drop the `async` keyword** (found iteration 8):
+  `lower-arrow-fn-impl` in `lower-typescript/stmt.rkt` always emits
+  `(call "=>" ...)`, never checking the `Async` token, so
+  `const load = async () => fetch('/api')` lowers identically to a sync arrow
+  and emits `() => fetch("/api")`. Pre-existing lowering bug, unrelated to
+  effects; async function *declarations* are unaffected (they use
+  `set!`+`async-fn`). Affects all arrows, bound or not.
 - `tsx-integration-test.rkt` now passes (verified iteration 6). The 4
   ternary/conditional-rendering failures documented in earlier iterations were
   fixed by the iteration-5 curried-call lowering change.
@@ -89,11 +96,22 @@ Done:
   separate call-graph nodes). Verified: `effects-infer-test` green (2 new
   tests), all effect suites + `lower-typescript-test` + `lower-python-test` +
   `examples-roundtrip-test` 44/44.
-- `const`/`let`/`var`-bound arrows lower to
+- ~~`const`/`let`/`var`-bound arrows lower to
   `(call "const"/"let"/"var" (list (set! NAME (call "=>" ...))))`; the `set!`
   sits one nesting level deeper than a bare function declaration, so those
-  named arrows are not yet collected. Arrow annotation has no UIR slot anyway
-  (it needs gap 4's `__withEffects` emit).
+  named arrows are not yet collected.~~ DONE (iteration 8): collection already
+  worked — `collect-functions` uses the full-descent `walk-uir`, which visits
+  the nested `set!`, so `named-function` matched it all along (verified with a
+  real-TS probe before touching code). The actual gap was write-back + emit:
+  `annotate-effects` did not descend into the var-decl wrapper, and arrows /
+  function expressions have no `uir-fn` effects slot to write into.
+  `annotate-effects` now (a) descends into `(call "var"/"let"/"const"
+  (list (set! ...)))` and (b) wraps an inferred arrow / function expression in
+  `(call "__withEffects" (list row fn))`; `emit-javascript` renders that call
+  as `__withEffects(row, fn)` and `program-has-effects?` detects the embedded
+  row so the guard preamble is emitted. End-to-end:
+  `const f = () => llm.query('hi')` → `const f = __withEffects({"llm": ...},
+  () => llm.query('hi'))`.
 
 ## Iterations
 
@@ -142,3 +160,13 @@ Done:
   `effects-infer-test` green (2 new tests), all effect suites,
   `lower-typescript-test`, `lower-python-test`, and `examples-roundtrip-test`
   44/44.
+- Iteration 8 (DONE): const/let/var-bound arrows & function expressions.
+  Discovered collection already worked (`walk-uir` descends into the var-decl
+  wrapper). Fixed the real gap: write-back + emit. `annotate-effects` descends
+  into `(call "var"/"let"/"const" (list (set! ...)))` and wraps an inferred
+  arrow/function expression in `(call "__withEffects" (list row fn))`;
+  `emit-javascript` renders that as `__withEffects(row, fn)` and
+  `program-has-effects?` detects the embedded row. Verified: `effects-infer-test`
+  (5 new infer tests + 2 annotate tests), `effects-js-emit-test` (5 new), all
+  effect suites, `lower-typescript-test`, `lower-python-test`,
+  `esbuild-integration-test`, `emit-html-test`, `examples-roundtrip-test` 44/44.

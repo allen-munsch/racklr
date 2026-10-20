@@ -332,19 +332,31 @@
     (uir-effect-row
      (filter (λ (e) (not (eq? (effect-name-symbol e) 'unknown)))
              (uir-effect-row-entries r))))
+  ;; The concrete (runtime-guardable) inferred row for a named function, or #f
+  ;; when there is nothing to emit (no inference, an empty row, or an
+  ;; all-'unknown row).
+  (define (inferred-row nm)
+    (define inferred (hash-ref rows nm #f))
+    (and inferred
+         (pair? (uir-effect-row-entries inferred))
+         (let ([c (concrete-row inferred)])
+           (and (pair? (uir-effect-row-entries c)) c))))
   (define (with-effects fn nm)
     (define existing (uir-fn-effects fn))
-    (define inferred (hash-ref rows nm #f))
     (cond
       ;; A hand-written row wins: it carries budgets/scopes inference cannot
       ;; recover, so re-inference must not overwrite it.
       [(uir-effect-row? existing) fn]
-      [(and inferred (pair? (uir-effect-row-entries inferred)))
-       (define concrete (concrete-row inferred))
-       (if (pair? (uir-effect-row-entries concrete))
-           (struct-copy uir-fn fn [effects concrete])
-           fn)]
+      [(inferred-row nm) => (λ (c) (struct-copy uir-fn fn [effects c]))]
       [else fn]))
+  ;; Arrow and function expressions have no effects slot. A guardable row is
+  ;; represented by wrapping the value in the __withEffects(row, fn) call the
+  ;; JS emitter renders.
+  (define (with-effects-wrap val nm)
+    (define c (inferred-row nm))
+    (if c
+        (uir-call (uir-symbol "__withEffects") (list c val))
+        val))
   (define (rewrite-value val nm)
     (cond
       [(uir-fn? val) (with-effects val nm)]
@@ -355,6 +367,8 @@
             (uir-fn? (first (uir-call-args val))))
        (struct-copy uir-call val
                     [args (list (with-effects (first (uir-call-args val)) nm))])]
+      [(or (arrow-call? val) (function-expr-call? val))
+       (with-effects-wrap val nm)]
       [else val]))
   (define (rewrite n)
     (cond
@@ -367,6 +381,14 @@
        (struct-copy uir-set! n
                     [value (rewrite-value (uir-set!-value n)
                                           (string->symbol (uir-symbol-name (uir-set!-name n))))])]
+      ;; const/let/var declarations wrap their binding one level deep:
+      ;; (call "const"/"let"/"var" (list (set! NAME <fn/arrow>))). Descend to
+      ;; reach the named binding so its inferred row is written back.
+      [(and (uir-call? n) (uir-symbol? (uir-call-callee n))
+            (member (uir-symbol-name (uir-call-callee n)) '("var" "let" "const"))
+            (= (length (uir-call-args n)) 1))
+       (struct-copy uir-call n
+                    [args (list (rewrite (first (uir-call-args n))))])]
       [else n]))
   (cond
     [(list? program) (map rewrite program)]

@@ -322,6 +322,95 @@
                                             (uir-call (jsdot (v "llm") "query") '()))))))
   (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
 
+;; ── JS/TS const/let/var-bound arrow & function encodings ─────────────
+;; TS lowers `const f = () => ...` to
+;; (call "const" (list (set! f (call "=>" (list params body))))) — the set!
+;; sits one level deeper than a bare function declaration, so collect-functions
+;; must unwrap the var/let/const call to reach the named binding.
+
+(define (var-decl kind binding)
+  (uir-call (sym kind) (list binding)))
+
+(define (test-const-arrow-inferred)
+  (define p (prog (var-decl "const"
+                            (uir-set! (sym "f")
+                                      (uir-call (sym "=>")
+                                                (list (uir-list '())
+                                                      (uir-call (jsdot (v "llm") "query") '())))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-let-arrow-inferred)
+  (define p (prog (var-decl "let"
+                            (uir-set! (sym "f")
+                                      (uir-call (sym "=>")
+                                                (list (uir-list '())
+                                                      (uir-call (jsdot (v "llm") "query") '())))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-var-arrow-inferred)
+  (define p (prog (var-decl "var"
+                            (uir-set! (sym "f")
+                                      (uir-call (sym "=>")
+                                                (list (uir-list '())
+                                                      (uir-call (jsdot (v "llm") "query") '())))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-const-arrow-caller-inherits)
+  ;; main calls a const-bound arrow f; f's llm effect must propagate to main.
+  (define f (var-decl "const"
+                      (uir-set! (sym "f")
+                                (uir-call (sym "=>")
+                                          (list (uir-list '())
+                                                (uir-call (jsdot (v "llm") "query") '()))))))
+  (define p (prog f
+                  (fn "main" (uir-call (v "f") '()))))
+  (define rows (infer-effects p))
+  (check-equal? (modality (hash-ref rows 'f) 'llm) 'may)
+  (check-equal? (modality (hash-ref rows 'main) 'llm) 'may))
+
+(define (test-const-function-expr-inferred)
+  (define p (prog (var-decl "const"
+                            (uir-set! (sym "f")
+                                      (uir-call (sym "function")
+                                                (list (uir-list '())
+                                                      (uir-call (jsdot (v "llm") "query") '())))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
+(define (test-const-arrow-annotate-wraps)
+  ;; annotate-effects must descend into the const wrapper and wrap the arrow in
+  ;; (call "__withEffects" (list row arrow)) so the JS emitter can render a
+  ;; guard for a function value with no effects slot.
+  (define arrow (uir-call (sym "=>")
+                          (list (uir-list '())
+                                (uir-call (jsdot (v "llm") "query") '()))))
+  (define p (prog (var-decl "const" (uir-set! (sym "f") arrow))))
+  (define decl (car (uir-block-stmts (annotate-effects p))))
+  (check-true (uir-call? decl))
+  (check-equal? (uir-symbol-name (uir-call-callee decl)) "const")
+  (define binding (first (uir-call-args decl)))
+  (check-true (uir-set!? binding))
+  (define wrapped (uir-set!-value binding))
+  (check-true (uir-call? wrapped))
+  (check-equal? (uir-symbol-name (uir-call-callee wrapped)) "__withEffects")
+  (define row (first (uir-call-args wrapped)))
+  (check-true (uir-effect-row? row))
+  (check-equal? (modality row 'llm) 'may))
+
+(define (test-const-arrow-annotate-no-wrap-when-pure)
+  ;; A pure const-bound arrow gains no __withEffects wrapper.
+  (define arrow (uir-call (sym "=>")
+                          (list (uir-list '())
+                                (uir-call (sym "+")
+                                          (list (uir-number "1") (uir-number "2"))))))
+  (define p (prog (var-decl "const" (uir-set! (sym "f") arrow))))
+  (define decl (car (uir-block-stmts (annotate-effects p))))
+  (define binding (first (uir-call-args decl)))
+  (define wrapped (uir-set!-value binding))
+  (check-true (and (uir-call? wrapped)
+                   (uir-symbol? (uir-call-callee wrapped))
+                   (string=? (uir-symbol-name (uir-call-callee wrapped)) "=>"))
+              "pure const arrow is left unwrapped"))
+
 (module+ main
   (test-empty-program)
   (test-lambda-not-collected)
@@ -363,4 +452,11 @@
   (test-set!-arrow-inferred)
   (test-function-expr-boundary-does-not-leak)
   (test-set!-function-inferred)
+  (test-const-arrow-inferred)
+  (test-let-arrow-inferred)
+  (test-var-arrow-inferred)
+  (test-const-arrow-caller-inherits)
+  (test-const-function-expr-inferred)
+  (test-const-arrow-annotate-wraps)
+  (test-const-arrow-annotate-no-wrap-when-pure)
   (displayln "All infer tests passed."))
