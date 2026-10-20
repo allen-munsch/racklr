@@ -40,7 +40,15 @@ Done:
      a `uir-effect-row` as a JS object literal, wraps any `uir-fn` (or
      async/gen-wrapped declaration) carrying a row in `__withEffects(row, fn)`,
      and prepends the `__withEffects` runtime preamble once when the program
-     uses effects. Extraction (withEffects call / JSDoc `@effects`) still open.
+     uses effects.
+   - `withEffects(row)(fn)` extraction DONE (iteration 4):
+     `racklr/effects/ts-annot.rkt` recognizes the curried wrapper's UIR shape
+     `(call (call (var withEffects) (list ROW)) (list FN))`, extracts the row
+     (`extract-with-effects-row`) and the wrapped fn
+     (`extract-with-effects-fn`), using the same row-literal convention as
+     Python's `@effects(...)`. Unit-tested on hand-built UIR; the row feeds
+     the iteration-3 emit guard. JSDoc `@effects` extraction still open (needs
+     comment preservation, not available in the CST).
 5. Inference/annotation is not wired into any pipeline entry point today
    (unit tests only).
 
@@ -53,6 +61,19 @@ Done:
   `git stash` of the emit change): ternary/conditional-rendering assertions at
   `tsx-integration-test.rkt:148-150,166` (`? (function()`, `: null`,
   `createTextNode(cond)`). Unrelated to effect emission.
+- **Curried-call lowering drops the RHS** (found iteration 4, blocks real TS
+  `withEffects(row)(fn)` end-to-end): in `lower-typescript/expr.rkt`,
+  `lower-single-expression`'s 2-kid call branch does not handle the CST shape
+  the grammar produces for `f(1)(2)` / `withEffects(row)(fn)` when the *inner*
+  call has non-empty args. That shape is
+  `singleExpression[ identifierName(f), singleExpression[ singleExpression[OpenParen e1 CloseParen], arguments[e2] ] ]`.
+  The branch only handles args-node tags `arguments` and `singleExpression`
+  with `>=3` kids (OpenParen…CloseParen) or `typeArguments`; the
+  `singleExpression[singleExpression[OpenParen…], arguments[…]` shape falls to
+  `[else (uir-null)]`, so `const c = f(1)(2);` lowers to `const c;`. Empty
+  inner calls (`make()(x)`) parse to a different shape and work. Fixing this
+  requires adding that case (reusing the OpenParen arg-extraction loop), then
+  re-running the 44-example round-trip suite to guard against regressions.
 
 ## Remaining adjacent encodings (follow-ups, not done)
 
@@ -83,3 +104,10 @@ Done:
   a `emit-javascript` wrapper that prepends the guard preamble when
   `program-has-effects?`. Verified: `effects-js-emit-test` green (new suite);
   effects + TS + examples-roundtrip (44/44) + esbuild green.
+- Iteration 4 (DONE): gap 4 extraction half — `racklr/effects/ts-annot.rkt`
+  extracts a `uir-effect-row` (and the wrapped fn) from the
+  `withEffects(row)(fn)` UIR shape. Verified: `effects-ts-annot-test` green
+  (new suite); `effects-js-emit-test`, `effects-python-annot-test`,
+  `effects-infer-test`, and `lower-typescript-test` all green. JSDoc `@effects`
+  extraction remains open (comments not in CST); end-to-end `withEffects` on
+  real TS source is blocked by the curried-call lowering bug documented above.
