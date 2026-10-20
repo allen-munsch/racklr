@@ -1,7 +1,8 @@
 #lang racket
 
 (require racklr/uir
-         racklr/effects/infer)
+         racklr/effects/infer
+         racklr/effects/python-annot)
 
 (provide emit-python)
 
@@ -449,6 +450,12 @@
 
 (define (emit-decorated uir indent)
   (define spc (make-string (* indent 4) #\space))
+  ;; The `@effects({...})` decorator is a static annotation, not a runtime
+  ;; decorator: its row is carried in the inner fn's effects field and rendered
+  ;; as `@__withEffects(...)`. Emitting it would evaluate the undefined
+  ;; `effects` name at import time.
+  (define decos (filter (λ (d) (not (effects-decorator? d)))
+                        (uir-decorated-decorators uir)))
   (define deco-lines
     (string-join
      (map (lambda (d)
@@ -456,7 +463,7 @@
             (if (null? (uir-call-args d))
                 (string-append spc "@" (emit-expr (uir-call-callee d)))
                 (string-append spc "@" (emit-expr d))))
-          (uir-decorated-decorators uir))
+          decos)
      "\n"))
   (define inner-str
     (let ([inner (uir-decorated-inner uir)])

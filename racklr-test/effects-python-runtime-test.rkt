@@ -11,12 +11,22 @@
          racket/file
          racket/system
          racklr/uir
+         racklr/effects/python-annot
          racklr/emit-python)
 
 (define (sym s) (uir-symbol s))
 (define (v s) (uir-var (uir-symbol s)))
 ;; Python attribute access `a.b` lowers to (uir-get a (uir-string "b")).
 (define (pydot b f) (uir-get b (uir-string f)))
+
+(define (str s) (uir-string s))
+(define (num s) (uir-number s))
+
+(define (effects-decorator . args)
+  (uir-call (uir-var (uir-symbol "effects")) args))
+
+(define (record . pairs)
+  (uir-record (map (λ (p) (cons (str (car p)) (cadr p))) pairs)))
 
 (define (prog . stmts) (uir-block stmts))
 
@@ -176,9 +186,19 @@
 
 (define (test-async-budget-exceeded)
   (check-async-throws (async-guarded-program (row (entry "llm" #:max 1))
-                                             (list (llm-op-await "query")
-                                                   (llm-op-await "query")))
+                                              (list (llm-op-await "query")
+                                                    (llm-op-await "query")))
                       "effect budget exceeded: llm"))
+
+(define (test-effects-decorator-not-reemitted)
+  ;; A hand-written `@effects({...})` decorator must be stripped at emit time;
+  ;; otherwise the emitted `@effects` raises NameError at import. The row it
+  ;; declares still guards the function.
+  (define deco
+    (effects-decorator (record (list "llm" (record (list "max" (num "5")))))))
+  (define inner
+    (fn "f" (llm-op "query") #:effects (extract-effects-row deco)))
+  (check-runs (prog (uir-decorated (list deco) inner))))
 
 (module+ main
   (test-budget-exceeded)
@@ -192,4 +212,5 @@
   (test-async-must-met)
   (test-async-must-unmet)
   (test-async-budget-exceeded)
+  (test-effects-decorator-not-reemitted)
   (displayln "All Python effect-runtime enforcement tests passed."))

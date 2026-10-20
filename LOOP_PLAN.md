@@ -221,6 +221,13 @@ Done:
   (3 new + 2 updated), `effects-infer-test` (5 new), all eight effect suites,
   `lower-typescript-test`, `lower-python-test`, `examples-roundtrip-test`,
   `esbuild-integration-test`, `emit-html-test`.
+- Iteration 13 (DONE): strip the Python `@effects(...)` annotation decorator at
+  emit time. `emit-decorated` in `emit-python.rkt` now filters out
+  `effects-decorator?` decorators (requiring `effects/python-annot`) so a
+  guarded function emits only `@__withEffects(...)`, not the undefined
+  `@effects` name (which raised `NameError` at import). Verified:
+  `effects-python-emit-test` (1 new), `effects-python-runtime-test` (1 new
+  python3-executed), all eight effect suites, `lower-python-test`.
 - Iteration 12 (DONE): Python async `must` obligations + async round-trip.
   `async def` previously lowered via `lower-funcdef` with the `async` keyword
   dropped, so a guarded function with an `await` emitted as an invalid sync
@@ -249,9 +256,10 @@ Done:
   no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
 - **`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
   enforced at runtime in either target, only emitted as data.
-- **`@effects(...)` annotation decorator is re-emitted literally** — the Python
-  `@effects({...})` decorator is an annotation, not a runtime decorator, but
-  `emit-decorated` emits every decorator, so a guarded function carries both
-  `@effects({...})` and `@__withEffects(...)`; executing it raises `NameError:
-  name 'effects' is not defined`. Pre-existing (affects sync too); the
-  annotation decorator should be stripped at emit time.
+- ~~**`@effects(...)` annotation decorator is re-emitted literally**~~ DONE
+  (iteration 13): `emit-decorated` in `emit-python.rkt` now filters out
+  `effects-decorator?` decorators before rendering, so a guarded function
+  carries only `@__withEffects(...)` (the row travels in the inner fn's effects
+  field). Verified with a new emit-level regression
+  (`effects-python-emit-test`) plus a python3-executed runtime regression
+  (`effects-python-runtime-test`, no `NameError`).
