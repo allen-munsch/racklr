@@ -36,6 +36,11 @@ Done:
    boundaries so they no longer leak into the enclosing function.
 4. TypeScript has no effect annotation extraction (`withEffects(...)` /
    JSDoc `@effects`) and no `__withEffects` emit.
+   - `__withEffects` emit DONE (iteration 3): `emit-javascript.rkt` now renders
+     a `uir-effect-row` as a JS object literal, wraps any `uir-fn` (or
+     async/gen-wrapped declaration) carrying a row in `__withEffects(row, fn)`,
+     and prepends the `__withEffects` runtime preamble once when the program
+     uses effects. Extraction (withEffects call / JSDoc `@effects`) still open.
 5. Inference/annotation is not wired into any pipeline entry point today
    (unit tests only).
 
@@ -44,6 +49,10 @@ Done:
 - `lower-javascript-test.rkt` fails pre-existing (confirmed via `git stash`):
   `cst-node-children: contract violation, expected: cst-node?`. A JS lowering
   bug, not effects-related.
+- `tsx-integration-test.rkt` fails pre-existing (4 failures, confirmed via
+  `git stash` of the emit change): ternary/conditional-rendering assertions at
+  `tsx-integration-test.rkt:148-150,166` (`? (function()`, `: null`,
+  `createTextNode(cond)`). Unrelated to effect emission.
 
 ## Remaining adjacent encodings (follow-ups, not done)
 
@@ -69,3 +78,8 @@ Done:
   back into the wrapped fn in `annotate-effects`, and make arrow bodies walk
   boundaries. Verified: `effects-infer-test` green (7 new tests); full effect +
   Python + TS suites green.
+- Iteration 3 (DONE): gap 4 emit half — `__withEffects` runtime-guard emission
+  in `emit-javascript.rkt`. Renamed the recursive worker to `emit-js` and added
+  a `emit-javascript` wrapper that prepends the guard preamble when
+  `program-has-effects?`. Verified: `effects-js-emit-test` green (new suite);
+  effects + TS + examples-roundtrip (44/44) + esbuild green.

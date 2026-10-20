@@ -36,7 +36,7 @@
 
 (define prefix-ops (set "prefix++" "prefix--"))
 
-(define (emit-javascript uir)
+(define (emit-js uir)
   (match uir
     [(uir-null) "null"]
     [(uir-bool v) (if v "true" "false")]
@@ -55,7 +55,7 @@
               (string-join
                (for/list ([attr attrs])
                  (match-define (uir-attribute name-uir value-uir) attr)
-                 (format "~a: ~a" (uir-symbol-name name-uir) (emit-javascript value-uir)))
+                 (format "~a: ~a" (uir-symbol-name name-uir) (emit-js value-uir)))
                ", ")))
         (format "~a({~a})" tag-name props-str)]
        
@@ -67,7 +67,7 @@
             (for/list ([attr (in-list attrs)])
               (match-define (uir-attribute name-uir value-uir) attr)
               (define name-str (symbol->string (uir-symbol-name name-uir)))
-              (define val-str (emit-javascript value-uir))
+              (define val-str (emit-js value-uir))
               (cond
                 [(string=? name-str "style")
                  (format "Object.assign(_el.style,~a);" val-str)]
@@ -81,7 +81,7 @@
         (define child-code
           (string-join
            (for/list ([child (in-list children)])
-             (define emitted (emit-javascript child))
+             (define emitted (emit-js child))
               (define wrapped
                  (cond [(uir-text-node? child) emitted]
                        [(uir-element? child) emitted]
@@ -101,20 +101,20 @@
         (error "uir-element tag must be uir-symbol or uir-string")])]
     
     [(uir-text-node text-uir)
-     (format "document.createTextNode(~a)" (emit-javascript text-uir))]
+     (format "document.createTextNode(~a)" (emit-js text-uir))]
     
     [(uir-jsx-expr expr)
      expr]
     
     [(uir-attribute name-uir value-uir)
      (cons (format "~s" (uir-symbol-name name-uir))
-           (emit-javascript value-uir))]
+           (emit-js value-uir))]
     
     [(uir-style _styles)
      ""]
     
     [(uir-list items)
-     (format "[~a]" (string-join (map emit-javascript items) ", "))]
+     (format "[~a]" (string-join (map emit-js items) ", "))]
 
     [(uir-record entries)
      (format "{ ~a }"
@@ -124,7 +124,7 @@
                 (define val (cdr e))
                 (cond
                   [(string=? key-str "...")
-                   (emit-javascript val)]
+                   (emit-js val)]
                   [(and (uir-fn? val) (string-prefix? key-str "get "))
                    (format "get ~a() { ~a }"
                            (substring key-str 4)
@@ -132,37 +132,53 @@
                   [(and (uir-fn? val) (string-prefix? key-str "set "))
                    (format "set ~a(~a) { ~a }"
                            (substring key-str 4)
-                           (string-join (map emit-javascript (uir-fn-params val)) ", ")
+                           (string-join (map emit-js (uir-fn-params val)) ", ")
                            (emit-body (uir-fn-body val)))]
                   [(uir-fn? val)
                    (format "~a(~a) { ~a }"
                            key-str
-                           (string-join (map emit-javascript (uir-fn-params val)) ", ")
+                           (string-join (map emit-js (uir-fn-params val)) ", ")
                            (emit-body (uir-fn-body val)))]
                   [else
-                   (format "~a: ~a" key-str (emit-javascript val))]))
+                   (format "~a: ~a" key-str (emit-js val))]))
               ", "))]
     
     [(uir-var name)
-     (emit-javascript name)]
+     (emit-js name)]
     
     [(uir-spread expr)
-     (format "...~a" (emit-javascript expr))]
+     (format "...~a" (emit-js expr))]
     
     [(uir-paren inner)
-     (format "(~a)" (emit-javascript inner))]
+     (format "(~a)" (emit-js inner))]
      
     [(uir-get base field)
-     (define base-str (emit-javascript base))
+     (define base-str (emit-js base))
      (if (uir-string? field)
          (format "~a.~a" base-str (uir-string-value field))
-         (format "~a[~a]" base-str (emit-javascript field)))]
+         (format "~a[~a]" base-str (emit-js field)))]
     
     [(uir-set! name val)
-     (cond [(uir-fn? val)
+     (cond [(and (uir-fn? val) (uir-effect-row? (uir-fn-effects val)))
+            (format "const ~a = __withEffects(~a, ~a)"
+                    (emit-js name)
+                    (emit-effect-row (uir-fn-effects val))
+                    (emit-raw-fn val))]
+           [(and (uir-call? val) (uir-symbol? (uir-call-callee val))
+                 (let ([op (uir-symbol-name (uir-call-callee val))])
+                   (or (string=? op "async-fn") (string=? op "gen-fn")))
+                 (uir-effect-row? (uir-fn-effects (first (uir-call-args val)))))
+            (define args (uir-call-args val))
+            (define fn (first args))
+            (define raw (if (string=? (uir-symbol-name (uir-call-callee val)) "async-fn")
+                            (emit-raw-async-fn fn)
+                            (emit-raw-gen-fn fn)))
+            (format "const ~a = __withEffects(~a, ~a)"
+                    (emit-js name) (emit-effect-row (uir-fn-effects fn)) raw)]
+           [(uir-fn? val)
             (format "function ~a(~a) { ~a }"
-                    (emit-javascript name)
-                    (string-join (map emit-javascript (uir-fn-params val)) ", ")
+                    (emit-js name)
+                    (string-join (map emit-js (uir-fn-params val)) ", ")
                     (emit-body (uir-fn-body val)))]
            [(and (uir-call? val) (uir-symbol? (uir-call-callee val))
                  (let ([op (uir-symbol-name (uir-call-callee val))])
@@ -172,47 +188,48 @@
             (define prefix (if (string=? (uir-symbol-name (uir-call-callee val)) "async-fn") "async function" "function*"))
             (format "~a ~a(~a) { ~a }"
                     prefix
-                    (emit-javascript name)
-                    (string-join (map emit-javascript (uir-fn-params fn)) ", ")
+                    (emit-js name)
+                    (string-join (map emit-js (uir-fn-params fn)) ", ")
                     (emit-body (uir-fn-body fn)))]
            [else
-            (format "~a = ~a" (emit-javascript name) (emit-javascript val))])]
+            (format "~a = ~a" (emit-js name) (emit-js val))])]
     
-    [(uir-fn _ params body _ _)
-     (define param-str
-       (string-join (map emit-javascript params) ", "))
-     (format "function(~a) { ~a }" param-str (emit-body body))]
+    [(uir-fn _ params body _ fx)
+     (define raw (emit-raw-fn (uir-fn #f params body #f #f)))
+     (if (uir-effect-row? fx)
+         (format "__withEffects(~a, ~a)" (emit-effect-row fx) raw)
+         raw)]
     
     [(uir-call callee args)
      (define op-name (and (uir-symbol? callee) (uir-symbol-name callee)))
      (cond [(and op-name (string=? op-name "dot") (= (length args) 2))
-            (format "~a.~a" (emit-javascript (first args)) (emit-javascript (second args)))]
+            (format "~a.~a" (emit-js (first args)) (emit-js (second args)))]
            [(and op-name (string=? op-name "index") (= (length args) 2))
-            (format "~a[~a]" (emit-javascript (first args)) (emit-javascript (second args)))]
+            (format "~a[~a]" (emit-js (first args)) (emit-js (second args)))]
            [(and op-name (string=? op-name "while") (= (length args) 2))
-            (format "while (~a) { ~a }" (emit-javascript (first args)) (emit-body (second args)))]
+            (format "while (~a) { ~a }" (emit-js (first args)) (emit-body (second args)))]
             [(and op-name (string=? op-name "dowhile") (= (length args) 2))
-             (format "do { ~a } while (~a)" (emit-body (first args)) (emit-javascript (second args)))]
+             (format "do { ~a } while (~a)" (emit-body (first args)) (emit-js (second args)))]
             [(and op-name (string=? op-name "with") (= (length args) 2))
-             (format "with (~a) { ~a }" (emit-javascript (first args)) (emit-body (second args)))]
+             (format "with (~a) { ~a }" (emit-js (first args)) (emit-body (second args)))]
            [(and op-name (string=? op-name "for") (= (length args) 4))
             (format "for (~a; ~a; ~a) { ~a }"
-                    (if (uir-null? (first args)) "" (emit-javascript (first args)))
-                    (if (uir-null? (second args)) "" (emit-javascript (second args)))
-                    (if (uir-null? (third args)) "" (emit-javascript (third args)))
+                    (if (uir-null? (first args)) "" (emit-js (first args)))
+                    (if (uir-null? (second args)) "" (emit-js (second args)))
+                    (if (uir-null? (third args)) "" (emit-js (third args)))
                     (emit-body (fourth args)))]
            [(and op-name (string=? op-name "forin") (= (length args) 3))
             (format "for (~a in ~a) { ~a }"
-                    (emit-javascript (first args))
-                    (emit-javascript (second args))
+                    (emit-js (first args))
+                    (emit-js (second args))
                     (emit-body (third args)))]
             [(and op-name (string=? op-name "forof") (= (length args) 3))
              (format "for (~a of ~a) { ~a }"
-                     (emit-javascript (first args))
-                     (emit-javascript (second args))
+                     (emit-js (first args))
+                     (emit-js (second args))
                      (emit-body (third args)))]
             [(and op-name (string=? op-name "switch") (= (length args) 3))
-             (define test-str (emit-javascript (first args)))
+             (define test-str (emit-js (first args)))
              (define case-str
                (if (uir-null? (second args)) ""
                    (emit-switch-cases (second args))))
@@ -227,8 +244,8 @@
             [(and op-name (string=? op-name "debugger"))
              "debugger"]
             [(and op-name (string=? op-name "label") (= (length args) 2))
-             (define label-name (emit-javascript (first args)))
-             (define body-str (emit-javascript (second args)))
+             (define label-name (emit-js (first args)))
+             (define body-str (emit-js (second args)))
              (format "~a: ~a" label-name body-str)]
             [(and op-name (string=? op-name "regex") (= (length args) 1))
              (uir-string-value (first args))]
@@ -237,32 +254,32 @@
              (define body-uir (second args))
              (define param-str
                (if (uir-list? params-uir)
-                   (string-join (map emit-javascript (uir-list-items params-uir)) ", ")
+                   (string-join (map emit-js (uir-list-items params-uir)) ", ")
                    ""))
              (format "function(~a) { ~a }" param-str (emit-body body-uir))]
             [(and op-name (string=? op-name "async-fn") (= (length args) 1))
              (define fn (first args))
              (format "async function(~a) { ~a }"
-                     (string-join (map emit-javascript (uir-fn-params fn)) ", ")
+                     (string-join (map emit-js (uir-fn-params fn)) ", ")
                      (emit-body (uir-fn-body fn)))]
             [(and op-name (string=? op-name "gen-fn") (= (length args) 1))
              (define fn (first args))
              (format "function* (~a) { ~a }"
-                     (string-join (map emit-javascript (uir-fn-params fn)) ", ")
+                     (string-join (map emit-js (uir-fn-params fn)) ", ")
                      (emit-body (uir-fn-body fn)))]
             [(and op-name (string=? op-name "import") (>= (length args) 1))
              (emit-import args)]
             [(and op-name (string=? op-name "export") (>= (length args) 1))
              (emit-export args)]
             [(and op-name (string=? op-name "throw") (= (length args) 1))
-             (format "throw ~a" (emit-javascript (first args)))]
+             (format "throw ~a" (emit-js (first args)))]
              [(and op-name (string=? op-name "try") (= (length args) 4))
               (define try-str (format "try { ~a }" (emit-body (first args))))
               (define catch-str
                 (if (uir-null? (third args))
                     ""
                     (format " catch (~a) { ~a }"
-                            (emit-javascript (second args))
+                            (emit-js (second args))
                             (emit-body (third args)))))
               (define finally-str
                 (if (uir-null? (fourth args))
@@ -274,50 +291,50 @@
               (define body-expr (second args))
               (define param-str
                 (if (uir-list? params-uir)
-                    (string-join (map emit-javascript (uir-list-items params-uir)) ", ")
-                    (emit-javascript params-uir)))
-              (define body-str (emit-javascript body-expr))
+                    (string-join (map emit-js (uir-list-items params-uir)) ", ")
+                    (emit-js params-uir)))
+              (define body-str (emit-js body-expr))
               (if (uir-block? body-expr)
                   (format "(~a) => { ~a }" param-str (emit-body body-expr))
                   (format "(~a) => ~a" param-str body-str))]
             [(and op-name (set-member? (set "var" "let" "const") op-name) (= (length args) 1))
              (emit-declaration op-name (first args))]
             [(and op-name (= (length args) 1) (set-member? postfix-ops op-name))
-            (format "~a~a" (emit-javascript (first args)) (substring op-name 7))]
+            (format "~a~a" (emit-js (first args)) (substring op-name 7))]
            [(and op-name (= (length args) 1) (set-member? prefix-ops op-name))
-            (format "~a~a" (substring op-name 6) (emit-javascript (first args)))]
+            (format "~a~a" (substring op-name 6) (emit-js (first args)))]
            [(and op-name (= (length args) 1))
-            (format "~a ~a" op-name (emit-javascript (first args)))]
+            (format "~a ~a" op-name (emit-js (first args)))]
            [(and op-name (set-member? infix-ops op-name) (= (length args) 2))
             (format "~a ~a ~a"
-                    (emit-javascript (first args))
+                    (emit-js (first args))
                     op-name
-                    (emit-javascript (second args)))]
+                    (emit-js (second args)))]
            [else
-            (let ([fn-str (emit-javascript callee)]
-                  [args-str (string-join (map emit-javascript args) ", ")])
+            (let ([fn-str (emit-js callee)]
+                  [args-str (string-join (map emit-js args) ", ")])
               (format "~a(~a)" fn-str args-str))])]
     
     [(uir-if test conseq altern)
      (if (or (uir-block? conseq) (uir-block? altern))
          (format "if (~a) { ~a } else { ~a }"
-                 (emit-javascript test)
+                 (emit-js test)
                  (emit-body conseq)
                  (emit-body altern))
          (format "~a ? ~a : ~a"
-                 (emit-javascript test)
-                 (emit-javascript conseq)
-                 (emit-javascript altern)))]
+                 (emit-js test)
+                 (emit-js conseq)
+                 (emit-js altern)))]
     
     [(uir-new class args)
      (format "new ~a(~a)"
-             (emit-javascript class)
-             (string-join (map emit-javascript args) ", "))]
+             (emit-js class)
+             (string-join (map emit-js args) ", "))]
     
     [(uir-class name super fields methods)
      (format "class ~a~a {~a}"
-             (emit-javascript name)
-             (if (uir-null? super) "" (format " extends ~a" (emit-javascript super)))
+             (emit-js name)
+             (if (uir-null? super) "" (format " extends ~a" (emit-js super)))
              (if (null? methods)
                  ""
                  (string-append "" (string-join (map emit-statement methods) ""))))]
@@ -326,15 +343,15 @@
      (string-join (map emit-statement stmts) "\n")]
     
     [(uir-return val)
-     (format "return ~a" (emit-javascript val))]
+     (format "return ~a" (emit-js val))]
     
     [(uir-await expr)
-     (format "await ~a" (emit-javascript expr))]
+     (format "await ~a" (emit-js expr))]
     
     [(uir-yield value from?)
      (format "~a ~a"
              (if from? "yield*" "yield")
-             (emit-javascript value))]
+             (emit-js value))]
     
     [(? uir? v)
      (format "/* unlowered: ~a */" (uir-tag v))]
@@ -343,8 +360,8 @@
 
 (define (emit-body node)
   (cond [(uir-null? node) ""]
-        [(uir-block? node) (emit-javascript node)]
-        [else (emit-javascript node)]))
+        [(uir-block? node) (emit-js node)]
+        [else (emit-js node)]))
 
 (define (emit-statement node)
   (cond [(uir-null? node) "null;"]
@@ -356,34 +373,34 @@
                         (uir-symbol? (uir-call-callee (uir-set!-value node)))
                         (let ([op (uir-symbol-name (uir-call-callee (uir-set!-value node)))])
                           (or (string=? op "async-fn") (string=? op "gen-fn"))))))
-          (emit-javascript node)]
+          (emit-js node)]
         [(uir-if? node)
          ;; Always emit a uir-if in statement position as an if-statement, never
          ;; a ternary. A ternary with a call in the consequent (`a ? b() : c`)
          ;; does not re-parse in the JS grammar.
          (format "if (~a) { ~a } else { ~a }"
-                 (emit-javascript (uir-if-test node))
+                 (emit-js (uir-if-test node))
                  (emit-statement (uir-if-then node))
                  (emit-statement (uir-if-else node)))]
         [(loop-statement? node)
-         (emit-javascript node)]
+         (emit-js node)]
         [(try-statement? node)
-         (emit-javascript node)]
+         (emit-js node)]
         [(switch-statement? node)
-         (emit-javascript node)]
+         (emit-js node)]
         [(and (uir-call? node) (uir-symbol? (uir-call-callee node))
               (string=? (uir-symbol-name (uir-call-callee node)) "dowhile"))
-         (format "~a;" (emit-javascript node))]
+         (format "~a;" (emit-js node))]
         [(declaration? node)
-          (format "~a;" (emit-javascript node))]
+          (format "~a;" (emit-js node))]
         [(uir-method? node)
          (format "~a(~a) {~a}"
-                 (emit-javascript (uir-method-name node))
-                 (string-join (map emit-javascript (uir-method-params node)) ", ")
-                 (emit-javascript (uir-method-body node)))]
+                 (emit-js (uir-method-name node))
+                 (string-join (map emit-js (uir-method-params node)) ", ")
+                 (emit-js (uir-method-body node)))]
         [(uir-var? node)
-         (format "~a;" (emit-javascript node))]
-        [else (format "~a;" (emit-javascript node))]))
+         (format "~a;" (emit-js node))]
+        [else (format "~a;" (emit-js node))]))
 
 (define (loop-statement? node)
   (and (uir-call? node)
@@ -406,26 +423,26 @@
 (define (emit-declaration kind body)
   (cond [(uir-set!? body)
          (format "~a ~a = ~a" kind
-                 (emit-javascript (uir-set!-name body))
-                 (emit-javascript (uir-set!-value body)))]
+                 (emit-js (uir-set!-name body))
+                 (emit-js (uir-set!-value body)))]
         [(uir-var? body)
-         (format "~a ~a" kind (emit-javascript (uir-var-name body)))]
+         (format "~a ~a" kind (emit-js (uir-var-name body)))]
         [(and (uir-call? body) (uir-symbol? (uir-call-callee body))
               (let ([op (uir-symbol-name (uir-call-callee body))])
                 (or (string=? op "array-bind") (string=? op "object-bind"))))
          (match-define (list names-list rhs) (uir-call-args body))
          (define names-str
            (if (uir-list? names-list)
-               (string-join (map emit-javascript (uir-list-items names-list)) ", ")
-               (emit-javascript names-list)))
+               (string-join (map emit-js (uir-list-items names-list)) ", ")
+               (emit-js names-list)))
          (define bracket-open (if (string=? (uir-symbol-name (uir-call-callee body)) "array-bind") "[" "{"))
          (define bracket-close (if (string=? (uir-symbol-name (uir-call-callee body)) "array-bind") "]" "}"))
          (if (uir-null? rhs)
              (format "~a ~a" kind (format "~a~a~a" bracket-open names-str bracket-close))
              (format "~a ~a = ~a" kind
                      (format "~a~a~a" bracket-open names-str bracket-close)
-                     (emit-javascript rhs)))]
-        [else (format "~a ~a" kind (emit-javascript body))]))
+                     (emit-js rhs)))]
+        [else (format "~a ~a" kind (emit-js body))]))
 
 (define (emit-switch-cases cases-block)
   (string-join
@@ -434,7 +451,7 @@
                           (uir-symbol? (uir-call-callee stmt))
                           (string=? "case" (uir-symbol-name (uir-call-callee stmt)))))
      (match-define (list test body) (uir-call-args stmt))
-     (format " case ~a: ~a" (emit-javascript test) (emit-switch-body body)))
+     (format " case ~a: ~a" (emit-js test) (emit-switch-body body)))
    ""))
 
 (define (emit-switch-body body)
@@ -450,7 +467,7 @@
 (define (emit-key key)
   (if (uir-string? key)
       (uir-string-value key)
-      (format "[~a]" (emit-javascript key))))
+      (format "[~a]" (emit-js key))))
 
 ;; ── ES Modules emit ──────────────────────────────────────────────────
 
@@ -466,12 +483,12 @@
      (format "import ~s" (uir-string-value (first args)))]
     ;; import x from 'm';
     [(and (= (length args) 2) (uir-symbol? (first args)))
-     (format "import ~a~a" (emit-javascript (first args)) source)]
+     (format "import ~a~a" (emit-js (first args)) source)]
     ;; import * as ns from 'm';
     [(and (= (length args) 2) (uir-list? (first args))
           (= (length (uir-list-items (first args))) 2))
      (define items (uir-list-items (first args)))
-     (define ns-name (emit-javascript (second items)))
+     (define ns-name (emit-js (second items)))
      (format "import * as ~a~a" ns-name source)]
     ;; import { x, y } from 'm';
     [(uir-record? (first args))
@@ -480,7 +497,7 @@
        (string-join
         (for/list ([e entries])
           (define export-name (uir-string-value (car e)))
-          (define local-name (emit-javascript (cdr e)))
+          (define local-name (emit-js (cdr e)))
           (if (string=? export-name local-name)
               local-name
               (format "~a as ~a" export-name local-name)))
@@ -497,10 +514,10 @@
   (cond
     ;; export default expr
     [(and (uir-symbol? first-arg) (string=? (uir-symbol-name first-arg) "default"))
-     (format "export default ~a" (emit-javascript (second args)))]
+     (format "export default ~a" (emit-js (second args)))]
     ;; export const x = 1; / export function f() {} ...
     [(and (uir-symbol? first-arg) (string=? (uir-symbol-name first-arg) "decl"))
-     (format "export ~a" (emit-javascript (second args)))]
+     (format "export ~a" (emit-js (second args)))]
     ;; export { x, y } or export { x, y } from 'm'
     [(uir-record? first-arg)
      (define entries (uir-record-entries first-arg))
@@ -508,7 +525,7 @@
        (string-join
         (for/list ([e entries])
           (define export-name (uir-string-value (car e)))
-          (define local-name (emit-javascript (cdr e)))
+          (define local-name (emit-js (cdr e)))
           (if (string=? export-name local-name)
               local-name
               (format "~a as ~a" local-name export-name)))
@@ -519,6 +536,86 @@
            ""))
      (format "export { ~a }~a" names src)]
     [else (format "/* unlowered export */")]))
+
+;; ── Effect-row runtime guard (gap 4: TypeScript / React emission) ───
+
+(define (emit-effect-entry-obj e)
+  ;; {"modality":"may","max":5,"scope":"...","ops":["query"]}
+  (define base (list (format "~s: ~s" "modality"
+                             (symbol->string (uir-effect-entry-modality e)))))
+  (define with-budget
+    (if (uir-effect-entry-budget e)
+        (cons (format "~s: ~a" "max" (uir-effect-entry-budget e)) base)
+        base))
+  (define with-scope
+    (if (uir-effect-entry-scope e)
+        (cons (format "~s: ~s" "scope" (uir-symbol-name (uir-effect-entry-scope e))) with-budget)
+        with-budget))
+  (define with-ops
+    (if (pair? (uir-effect-entry-ops e))
+        (cons (format "~s: [~a]" "ops"
+                      (string-join
+                       (map (λ (o) (format "~s" (uir-symbol-name o)))
+                            (uir-effect-entry-ops e))
+                       ", "))
+              with-scope)
+        with-scope))
+  (string-append "{" (string-join (reverse with-ops) ", ") "}"))
+
+(define (emit-effect-row row)
+  (string-append
+   "{"
+   (string-join
+    (map (λ (e) (format "~s: ~a"
+                        (uir-symbol-name (uir-effect-entry-name e))
+                        (emit-effect-entry-obj e)))
+         (uir-effect-row-entries row))
+    ", ")
+   "}"))
+
+(define (emit-raw-fn fn)
+  (define param-str (string-join (map emit-js (uir-fn-params fn)) ", "))
+  (format "function(~a) { ~a }" param-str (emit-body (uir-fn-body fn))))
+
+(define (emit-raw-async-fn fn)
+  (format "async function(~a) { ~a }"
+          (string-join (map emit-js (uir-fn-params fn)) ", ")
+          (emit-body (uir-fn-body fn))))
+
+(define (emit-raw-gen-fn fn)
+  (format "function* (~a) { ~a }"
+          (string-join (map emit-js (uir-fn-params fn)) ", ")
+          (emit-body (uir-fn-body fn))))
+
+(define (effects-guard-preamble)
+  (string-append
+   "function __withEffects(row, fn) {\n"
+   "  var _valid = [\"may\", \"must\", \"must-not\"];\n"
+   "  for (var _k in row) {\n"
+   "    var _e = row[_k];\n"
+   "    var _m = _e.modality || \"may\";\n"
+   "    if (_valid.indexOf(_m) === -1) throw new Error(\"invalid effect modality: \" + _m);\n"
+   "    var _b = _e.max;\n"
+   "    if (_b != null && (typeof _b !== \"number\" || _b < 0)) throw new Error(\"invalid effect budget: \" + _b);\n"
+   "  }\n"
+   "  fn.__effects__ = row;\n"
+   "  return fn;\n"
+   "}"))
+
+(define (program-has-effects? uir)
+  (cond
+    [(struct? uir)
+     (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
+         (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
+           (program-has-effects? f)))]
+    [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
+    [else #f]))
+
+(define (emit-javascript uir)
+  (define body (emit-js uir))
+  (if (program-has-effects? uir)
+      (string-append (effects-guard-preamble) "\n\n" body)
+      body))
 
 (module+ main
   (displayln "emit-javascript loaded."))
