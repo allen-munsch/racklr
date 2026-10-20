@@ -246,16 +246,36 @@ Done:
   budget exceeded), `effects-python-emit-test` (2 new: async guard emission +
   async-aware preamble), all effect suites, `lower-typescript-test`,
   `examples-roundtrip-test` 44/44, `esbuild-integration-test`, `emit-html-test`;
-  emitted async guarded preamble re-parses cleanly through the generated
-  Python3 lexer. Only `lower-javascript-test` fails, pre-existing (documented).
+   emitted async guarded preamble re-parses cleanly through the generated
+   Python3 lexer. Only `lower-javascript-test` fails, pre-existing (documented).
+ - Iteration 14 (DONE): runtime `scope` enforcement (`reads=`/`writes=`).
+   The `__perform` preamble in both `emit-javascript.rkt` and `emit-python.rkt`
+   now enforces the direction half of a `reads=`/`writes=` scope: a `reads=X`
+   entry throws `effect scope violation: <name>.<op> outside reads=X` when the
+   performed op is a known write verb, and a `writes=X` entry throws the mirror
+   when the op is a known read verb. Bare (non-directional) qualifiers stay
+   opaque and are emitted as data only. Resource matching (the `X` side) is
+   deliberately deferred — the call-site instrumentation exposes only the op
+   name (`effect-op-of-callee`), not the resource path. Verified:
+   `effects-js-runtime-test` (4 new tests), `effects-python-runtime-test`
+   (4 new tests), all nine effect suites, `lower-python-test`,
+   `lower-typescript-test`, `tsx-integration-test`, `esbuild-integration-test`,
+   `emit-html-test`, and `examples-roundtrip-test` 44/44. Only
+   `lower-javascript-test` fails, pre-existing (documented).
 
 ## Still open (next iterations)
 
 - **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
   generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
   no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
-- **`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
-  enforced at runtime in either target, only emitted as data.
+- ~~**`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
+  enforced at runtime in either target, only emitted as data.~~ DONE
+  (iteration 14): both `__perform` preambles now enforce the direction half of
+  a `reads=`/`writes=` scope against the performed operation name — a `reads=X`
+  entry throws when the op is a known write verb, a `writes=X` entry throws when
+  the op is a known read verb; bare (non-directional) qualifiers stay opaque and
+  are still emitted as data. Resource matching (the `X` side) is deferred — the
+  call site currently exposes only the op name, not the resource path.
 - ~~**`@effects(...)` annotation decorator is re-emitted literally**~~ DONE
   (iteration 13): `emit-decorated` in `emit-python.rkt` now filters out
   `effects-decorator?` decorators before rendering, so a guarded function

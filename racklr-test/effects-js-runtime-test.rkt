@@ -44,13 +44,15 @@
   (uir-await (uir-call (jsdot (v "Promise") "resolve") '())))
 
 ;; Build a constraint record for one effect entry: {"modality","max","ops"}.
-(define (entry #:modality [modality "may"] #:max [max #f] #:ops [ops #f])
+(define (entry #:modality [modality "may"] #:max [max #f] #:ops [ops #f] #:scope [scope #f])
   (define base (list (list "modality" (uir-string modality))))
   (define with-ops
     (if ops (cons (list "ops" (uir-list (map (λ (o) (uir-string o)) ops))) base) base))
   (define with-max
     (if max (cons (list "max" (uir-number (number->string max))) with-ops) with-ops))
-  (apply record with-max))
+  (define with-scope
+    (if scope (cons (list "scope" (uir-string scope)) with-max) with-max))
+  (apply record with-scope))
 
 ;; Build a full row record: ((name entry) ...).
 (define (row . name-entries)
@@ -163,6 +165,26 @@
   (check-runs (guarded-program (row (list "llm" (entry #:max 5)))
                                (list (llm-op "query")))))
 
+;; ── scope enforcement ────────────────────────────────────────────────
+
+(define (test-scope-reads-rejects-write)
+  (check-throws (guarded-program (row (list "db" (entry #:scope "reads=search_index")))
+                                 (list (db-op "write")))
+                "effect scope violation: db.write outside reads=search_index"))
+
+(define (test-scope-writes-rejects-read)
+  (check-throws (guarded-program (row (list "db" (entry #:scope "writes=user")))
+                                 (list (db-op "fetch")))
+                "effect scope violation: db.fetch outside writes=user"))
+
+(define (test-scope-reads-allows-read)
+  (check-runs (guarded-program (row (list "db" (entry #:scope "reads=search_index")))
+                               (list (db-op "fetch")))))
+
+(define (test-scope-bare-qualifier-opaque)
+  (check-runs (guarded-program (row (list "db" (entry #:scope "tenant_a")))
+                               (list (db-op "write")))))
+
 (define (test-async-budget-after-await)
   ;; Effects performed after an await must still count against the ambient
   ;; frame: the context stays pushed until the returned promise settles.
@@ -191,6 +213,10 @@
   (test-must-met)
   (test-must-ops-met)
   (test-may-within-budget-runs)
+  (test-scope-reads-rejects-write)
+  (test-scope-writes-rejects-read)
+  (test-scope-reads-allows-read)
+  (test-scope-bare-qualifier-opaque)
   (test-async-budget-after-await)
   (test-async-must-met)
   (test-async-must-unmet)

@@ -39,8 +39,8 @@
 (define (llm-op-await op) (uir-await (llm-op op)))
 
 ;; Build one effect entry: (name modality ops budget scope).
-(define (entry name #:modality [modality 'may] #:max [max #f] #:ops [ops '()])
-  (uir-effect-entry (sym name) modality (map sym ops) max #f))
+(define (entry name #:modality [modality 'may] #:max [max #f] #:ops [ops '()] #:scope [scope #f])
+  (uir-effect-entry (sym name) modality (map sym ops) max (if scope (uir-symbol scope) #f)))
 
 (define (row . entries)
   (uir-effect-row entries))
@@ -173,6 +173,26 @@
   (check-runs (guarded-program (row (entry "llm" #:max 5))
                                (list (llm-op "query")))))
 
+;; ── scope enforcement ────────────────────────────────────────────────
+
+(define (test-scope-reads-rejects-write)
+  (check-throws (guarded-program (row (entry "db" #:scope "reads=search_index"))
+                                 (list (db-op "write")))
+                "effect scope violation: db.write outside reads=search_index"))
+
+(define (test-scope-writes-rejects-read)
+  (check-throws (guarded-program (row (entry "db" #:scope "writes=user"))
+                                 (list (db-op "fetch")))
+                "effect scope violation: db.fetch outside writes=user"))
+
+(define (test-scope-reads-allows-read)
+  (check-runs (guarded-program (row (entry "db" #:scope "reads=search_index"))
+                               (list (db-op "fetch")))))
+
+(define (test-scope-bare-qualifier-opaque)
+  (check-runs (guarded-program (row (entry "db" #:scope "tenant_a"))
+                               (list (db-op "write")))))
+
 ;; ── async enforcement ────────────────────────────────────────────────
 
 (define (test-async-must-met)
@@ -209,6 +229,10 @@
   (test-must-met)
   (test-must-ops-met)
   (test-may-within-budget-runs)
+  (test-scope-reads-rejects-write)
+  (test-scope-writes-rejects-read)
+  (test-scope-reads-allows-read)
+  (test-scope-bare-qualifier-opaque)
   (test-async-must-met)
   (test-async-must-unmet)
   (test-async-budget-exceeded)
