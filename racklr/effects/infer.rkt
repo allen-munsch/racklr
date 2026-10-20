@@ -414,8 +414,18 @@
             (= (length (uir-call-args n)) 1))
        (struct-copy uir-call n
                     [args (list (rewrite (first (uir-call-args n))))])]
-      [(with-effects-call? n) (rewrite-with-effects n)]
-      [else n]))
+       [(with-effects-call? n) (rewrite-with-effects n)]
+       ;; A bare async/generator function statement ((call "async-fn" (list fn)))
+       ;; is a named function (the Python `async def` encoding); write its
+       ;; inferred row back into the wrapped uir-fn.
+       [(wrapped-fn n)
+        => (λ (fn)
+             (define nm (and (uir-fn-name fn) (uir-symbol? (uir-fn-name fn))
+                             (string->symbol (uir-symbol-name (uir-fn-name fn)))))
+             (if nm
+                 (struct-copy uir-call n [args (list (with-effects fn nm))])
+                 n))]
+       [else n]))
   (cond
     [(list? program) (map rewrite program)]
     [(uir-block? program)

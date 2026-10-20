@@ -20,6 +20,11 @@
 (define (fn name body #:params [params '()])
   (uir-fn (if name (uir-symbol name) #f) params body #f #f))
 
+;; Async function as a top-level statement: (call "async-fn" (list fn)).
+(define (async-fn-stmt name body)
+  (uir-call (sym "async-fn")
+            (list (uir-fn (uir-symbol name) '() body #f #f))))
+
 (define (prog . stmts)
   (uir-block stmts))
 
@@ -82,6 +87,26 @@
   (check-true (string-contains? out "__perform(\"llm\", \"query\",")
               "top-level effect call is instrumented"))
 
+(define (test-async-inferred-effects-emit-guard)
+  ;; An unannotated async function that performs an effect must be emitted as
+  ;; `async def` and guarded, so its coroutine is awaited before `must` checks.
+  (define out (emit-python (prog (async-fn-stmt "summarize"
+                                                (uir-call (dot (v "llm") "query")
+                                                          (list (uir-string "hi")))))))
+  (check-true (string-contains? out "async def summarize")
+              "async function keeps the async keyword")
+  (check-true (string-contains? out "@__withEffects(")
+              "async effectful function is guarded"))
+
+(define (test-async-preamble-awaits-coroutine)
+  (define out (emit-python (prog (async-fn-stmt "summarize"
+                                                (uir-call (dot (v "llm") "query")
+                                                          (list (uir-string "hi")))))))
+  (check-true (string-contains? out "iscoroutinefunction")
+              "preamble detects coroutine functions")
+  (check-true (string-contains? out "async def wrapped")
+              "preamble defines an async wrapper for async functions"))
+
 (module+ main
   (test-no-effects-no-preamble)
   (test-inferred-effects-emit-guard)
@@ -89,4 +114,6 @@
   (test-direct-effect-call-instrumented)
   (test-preamble-defines-perform)
   (test-top-level-effect-call-emits-preamble)
+  (test-async-inferred-effects-emit-guard)
+  (test-async-preamble-awaits-coroutine)
   (displayln "All python-emit effect-guard tests passed."))

@@ -375,6 +375,12 @@
 
 ;; ── Async ──────────────────────────────────────────────────────────
 
+;; Wrap a lowered uir-fn as an async function: (call "async-fn" (list fn)).
+;; Reuses the JS/TS async-fn convention so effect inference and the emitters
+;; already know the shape.
+(define (async-fn-wrap fn)
+  (uir-call (uir-symbol "async-fn") (list fn)))
+
 ;; async_stmt wraps [group (funcdef | with_stmt | for_stmt)]
 (define (lower-async cst tk-type tk-value)
   (define kids (node-children cst))
@@ -386,7 +392,7 @@
             (uir-null)
             (let ([inner (first gk)])
               (match (any-tree-tag inner)
-                ['funcdef (lower-funcdef inner tk-type tk-value)]
+                ['funcdef (async-fn-wrap (lower-funcdef inner tk-type tk-value))]
                 ['for_stmt (lower-for inner tk-type tk-value)]
                 ['with_stmt (lower-with inner tk-type tk-value)]
                 [_ (uir-symbol (format "?async-~a" (any-tree-tag inner)))]))))))
@@ -417,20 +423,35 @@
         (let* ([gk (node-children func-node)]
                [inner-node (if (pair? gk) (first gk) #f)])
           (if inner-node
-              (match (any-tree-tag inner-node)
-                ['funcdef (lower-funcdef inner-node tk-type tk-value)]
-                ['classdef (lower-classdef inner-node tk-type tk-value)]
-                [_ (uir-symbol (format "?dec-inner-~a" (any-tree-tag inner-node)))])
+               (match (any-tree-tag inner-node)
+                 ['funcdef (lower-funcdef inner-node tk-type tk-value)]
+                 ['classdef (lower-classdef inner-node tk-type tk-value)]
+                 ['async_funcdef
+                  (let ([kids (node-children inner-node)])
+                    (define fd (and (pair? kids) (first kids)))
+                    (if (and fd (cst-node? fd))
+                        (async-fn-wrap (lower-funcdef fd tk-type tk-value))
+                        (uir-symbol "?async-funcdef")))]
+                 [_ (uir-symbol (format "?dec-inner-~a" (any-tree-tag inner-node)))])
               (uir-null)))
         (uir-null)))
-  ;; Attach any @effects(...) row to a decorated uir-fn's effects field.
+  ;; Attach any @effects(...) row to a decorated uir-fn's effects field,
+  ;; reaching through an async-fn wrapper when the function is async.
   (define effects-row
     (for/or ([d (in-list decorators)])
       (extract-effects-row d)))
   (define inner-with-effects
-    (if (and effects-row (uir-fn? inner))
-        (struct-copy uir-fn inner [effects effects-row])
-        inner))
+    (cond
+      [(and effects-row (uir-fn? inner))
+       (struct-copy uir-fn inner [effects effects-row])]
+      [(and effects-row (uir-call? inner)
+            (uir-symbol? (uir-call-callee inner))
+            (string=? (uir-symbol-name (uir-call-callee inner)) "async-fn")
+            (= (length (uir-call-args inner)) 1)
+            (uir-fn? (first (uir-call-args inner))))
+       (async-fn-wrap (struct-copy uir-fn (first (uir-call-args inner))
+                                   [effects effects-row]))]
+      [else inner]))
   (uir-decorated decorators inner-with-effects))
 
 ;; Lower a single decorator: @name or @name(args)

@@ -221,16 +221,37 @@ Done:
   (3 new + 2 updated), `effects-infer-test` (5 new), all eight effect suites,
   `lower-typescript-test`, `lower-python-test`, `examples-roundtrip-test`,
   `esbuild-integration-test`, `emit-html-test`.
+- Iteration 12 (DONE): Python async `must` obligations + async round-trip.
+  `async def` previously lowered via `lower-funcdef` with the `async` keyword
+  dropped, so a guarded function with an `await` emitted as an invalid sync
+  `def ... await` and the `__withEffects` wrapper popped its context frame
+  before the coroutine body ran — async budget/must-not/ops/must were all
+  unenforced. `lower-python/stmt.rkt` now wraps `async def` (plain and
+  decorated) in the existing JS/TS `(call "async-fn" (list fn))` convention
+  (`async-fn-wrap`); `emit-python.rkt` renders that as `async def` (with the
+  guard prefix) in both statement and decorated positions, and the
+  `__withEffects` preamble now imports `inspect` and returns an
+  `async def wrapped` that `await`s `func(*args, **kwargs)` before `_check`
+  when `inspect.iscoroutinefunction(func)`. `annotate-effects` descends into a
+  bare async-fn statement so inferred rows reach the wrapped fn. Verified:
+  `lower-python-test` (async UIR-shape + round-trip assertions),
+  `effects-python-runtime-test` (3 new async tests: must met, must unmet,
+  budget exceeded), `effects-python-emit-test` (2 new: async guard emission +
+  async-aware preamble), all effect suites, `lower-typescript-test`,
+  `examples-roundtrip-test` 44/44, `esbuild-integration-test`, `emit-html-test`;
+  emitted async guarded preamble re-parses cleanly through the generated
+  Python3 lexer. Only `lower-javascript-test` fails, pre-existing (documented).
 
 ## Still open (next iterations)
 
 - **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
   generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
   no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
-- **Python async `must` obligations** — `async def` lowers via `lower-funcdef`
-  without an async marker in the UIR, so the Python `__withEffects` wrapper
-  cannot await promise/coroutine settlement before checking `must` obligations
-  (the JS target checks after promise settlement). Async `must` is therefore
-  not yet enforced on the Python target; sync `must` is.
 - **`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
   enforced at runtime in either target, only emitted as data.
+- **`@effects(...)` annotation decorator is re-emitted literally** — the Python
+  `@effects({...})` decorator is an annotation, not a runtime decorator, but
+  `emit-decorated` emits every decorator, so a guarded function carries both
+  `@effects({...})` and `@__withEffects(...)`; executing it raises `NameError:
+  name 'effects' is not defined`. Pre-existing (affects sync too); the
+  annotation decorator should be stripped at emit time.

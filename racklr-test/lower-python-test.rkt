@@ -182,7 +182,14 @@
 ;; UIR inspection: async def foo(): pass
 (let ([cst (py-parse "async def foo(): pass\n\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
-  (check-true (uir-fn? uir) "async def lowers to uir-fn"))
+  (check-true (uir-call? uir) "async def lowers to an async-fn wrapper call")
+  (check-equal? (uir-symbol-name (uir-call-callee uir)) "async-fn"
+                "async def uses the async-fn wrapper")
+  (check-equal? (length (uir-call-args uir)) 1 "async-fn wraps one function")
+  (check-true (uir-fn? (first (uir-call-args uir))) "inner is uir-fn"))
+
+;; round-trip: async def foo(): pass
+(check-py "async def foo(): pass\n\n" "async def foo():\n    pass")
 
 ;; ── Lambda ────────────────────────────────────────────────────────
 

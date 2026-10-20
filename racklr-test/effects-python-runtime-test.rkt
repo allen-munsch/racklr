@@ -25,6 +25,8 @@
 
 (define (llm-op op) (uir-call (pydot (v "llm") op) '()))
 (define (db-op op) (uir-call (pydot (v "db") op) '()))
+;; Await a directly-performed effect inside an async function.
+(define (llm-op-await op) (uir-await (llm-op op)))
 
 ;; Build one effect entry: (name modality ops budget scope).
 (define (entry name #:modality [modality 'may] #:max [max #f] #:ops [ops '()])
@@ -84,6 +86,44 @@
   (check-true (string-contains? out "OK")
               (format "expected OK, got: ~a" out)))
 
+;; Async guarded function: (call "async-fn" (list fn)) carrying a row.
+(define (async-guarded-program row-uir stmts)
+  (prog (uir-call (sym "async-fn")
+                  (list (fn "f"
+                            (uir-block (if (null? stmts) (list (uir-null)) stmts))
+                            #:effects row-uir)))))
+
+(define (call-f-async-harness)
+  (string-append
+   "import asyncio\n"
+   "class _LLM:\n"
+   "    async def query(self): return \"q\"\n"
+   "    async def generate(self): return \"g\"\n"
+   "llm = _LLM()\n"
+   "class _DB:\n"
+   "    async def fetch(self): return \"d\"\n"
+   "    async def write(self): return \"w\"\n"
+   "db = _DB()\n"
+   "try:\n"
+   "    asyncio.run(f())\n"
+   "    print(\"OK\")\n"
+   "except Exception as e:\n"
+   "    print(\"THREW:\" + str(e))\n"))
+
+(define (check-async-throws program message)
+  (define-values (ok? out)
+    (run-python (string-append (emit-python program) "\n" (call-f-async-harness))))
+  (check-true ok? (format "python3 exited nonzero: ~a" out))
+  (check-true (string-contains? out (format "THREW:~a" message))
+              (format "expected THREW:~a, got: ~a" message out)))
+
+(define (check-async-runs program)
+  (define-values (ok? out)
+    (run-python (string-append (emit-python program) "\n" (call-f-async-harness))))
+  (check-true ok? (format "python3 exited nonzero: ~a" out))
+  (check-true (string-contains? out "OK")
+              (format "expected OK, got: ~a" out)))
+
 ;; ── tests ───────────────────────────────────────────────────────────
 
 (define (test-budget-exceeded)
@@ -123,6 +163,23 @@
   (check-runs (guarded-program (row (entry "llm" #:max 5))
                                (list (llm-op "query")))))
 
+;; ── async enforcement ────────────────────────────────────────────────
+
+(define (test-async-must-met)
+  (check-async-runs (async-guarded-program (row (entry "llm" #:modality 'must))
+                                           (list (llm-op-await "query")))))
+
+(define (test-async-must-unmet)
+  (check-async-throws (async-guarded-program (row (entry "llm" #:modality 'must))
+                                             '())
+                      "effect obligation unmet: llm"))
+
+(define (test-async-budget-exceeded)
+  (check-async-throws (async-guarded-program (row (entry "llm" #:max 1))
+                                             (list (llm-op-await "query")
+                                                   (llm-op-await "query")))
+                      "effect budget exceeded: llm"))
+
 (module+ main
   (test-budget-exceeded)
   (test-must-not-prohibited)
@@ -132,4 +189,7 @@
   (test-must-met)
   (test-must-ops-met)
   (test-may-within-budget-runs)
+  (test-async-must-met)
+  (test-async-must-unmet)
+  (test-async-budget-exceeded)
   (displayln "All Python effect-runtime enforcement tests passed."))

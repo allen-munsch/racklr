@@ -48,6 +48,8 @@
          (if (uir-fn-name uir)
              (emit-funcdef uir indent)
              (string-append spc (emit-lambda uir)))]
+        [(async-fn-call? uir)
+         (emit-funcdef (first (uir-call-args uir)) indent #t)]
         [(uir-class? uir)
          (emit-classdef uir indent)]
         [(uir-import? uir)
@@ -232,6 +234,7 @@
 
 (define (effects-guard-preamble)
   (string-append
+   "import inspect\n"
    "__effects_stack = []\n"
    "def __effects_current():\n"
    "    return __effects_stack[-1] if __effects_stack else None\n"
@@ -275,15 +278,26 @@
    "                elif not _perf or not (_perf.get(\"any\", 0) > 0):\n"
    "                    raise RuntimeError(\"effect obligation unmet: \" + _k)\n"
    "    def _decorator(func):\n"
-   "        def wrapped(*args, **kwargs):\n"
-   "            _frame = {\"row\": row, \"performed\": {}}\n"
-   "            __effects_stack.append(_frame)\n"
-   "            try:\n"
-   "                _result = func(*args, **kwargs)\n"
-   "                _check(_frame)\n"
-   "                return _result\n"
-   "            finally:\n"
-   "                __effects_stack.pop()\n"
+   "        if inspect.iscoroutinefunction(func):\n"
+   "            async def wrapped(*args, **kwargs):\n"
+   "                _frame = {\"row\": row, \"performed\": {}}\n"
+   "                __effects_stack.append(_frame)\n"
+   "                try:\n"
+   "                    _result = await func(*args, **kwargs)\n"
+   "                    _check(_frame)\n"
+   "                    return _result\n"
+   "                finally:\n"
+   "                    __effects_stack.pop()\n"
+   "        else:\n"
+   "            def wrapped(*args, **kwargs):\n"
+   "                _frame = {\"row\": row, \"performed\": {}}\n"
+   "                __effects_stack.append(_frame)\n"
+   "                try:\n"
+   "                    _result = func(*args, **kwargs)\n"
+   "                    _check(_frame)\n"
+   "                    return _result\n"
+   "                finally:\n"
+   "                    __effects_stack.pop()\n"
    "        wrapped.__effects__ = row\n"
    "        return wrapped\n"
    "    return _decorator"))
@@ -299,7 +313,16 @@
     [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
     [else #f]))
 
-(define (emit-funcdef uir indent)
+;; The JS/TS async-fn wrapper: (call "async-fn" (list fn)). Python async defs
+;; lower to the same shape so inference and the emitters share one convention.
+(define (async-fn-call? n)
+  (and (uir-call? n)
+       (uir-symbol? (uir-call-callee n))
+       (string=? (uir-symbol-name (uir-call-callee n)) "async-fn")
+       (= (length (uir-call-args n)) 1)
+       (uir-fn? (first (uir-call-args n)))))
+
+(define (emit-funcdef uir indent [async? #f])
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-fn-name uir))
   (define name-str (if name (uir-symbol-name name) "???"))
@@ -324,7 +347,7 @@
         ""))
   (string-append
    guard-prefix
-   spc "def " name-str "(" params-str ")" return-str ":\n"
+   spc (if async? "async def " "def ") name-str "(" params-str ")" return-str ":\n"
    (emit-body (uir-fn-body uir) (+ indent 1))))
 
 (define (emit-classdef uir indent)
@@ -438,6 +461,8 @@
   (define inner-str
     (let ([inner (uir-decorated-inner uir)])
       (cond [(uir-fn? inner) (emit-funcdef inner indent)]
+            [(async-fn-call? inner)
+             (emit-funcdef (first (uir-call-args inner)) indent #t)]
             [(uir-class? inner) (emit-classdef inner indent)]
             [else (emit-stmt inner indent)])))
   (string-append deco-lines "\n" inner-str))
