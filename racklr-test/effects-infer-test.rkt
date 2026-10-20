@@ -303,6 +303,25 @@
                                             (uir-call (jsdot (v "llm") "query") '()))))))
   (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
 
+;; ── JS/TS anonymous `function` expressions ──────────────────────────
+;; TS lowers `function (params) { body }` to (call "function" (list params body)),
+;; a sibling of `=>`. The body is a nested function boundary, and a function
+;; expression bound to a name via set! is a named function for inference.
+
+(define (test-function-expr-boundary-does-not-leak)
+  (define fexpr (uir-call (sym "function")
+                          (list (uir-list '())
+                                (uir-call (jsdot (v "llm") "query") '()))))
+  (define p (prog (fn "outer" (uir-block (list fexpr (uir-null))))))
+  (check-equal? (hash-ref (infer-effects p) 'outer) (empty-row)))
+
+(define (test-set!-function-inferred)
+  (define p (prog (uir-set! (sym "f")
+                            (uir-call (sym "function")
+                                      (list (uir-list '())
+                                            (uir-call (jsdot (v "llm") "query") '()))))))
+  (check-equal? (modality (hash-ref (infer-effects p) 'f) 'llm) 'may))
+
 (module+ main
   (test-empty-program)
   (test-lambda-not-collected)
@@ -342,4 +361,6 @@
   (test-set!-async-fn-annotate-writes-back)
   (test-arrow-boundary-does-not-leak)
   (test-set!-arrow-inferred)
+  (test-function-expr-boundary-does-not-leak)
+  (test-set!-function-inferred)
   (displayln "All infer tests passed."))

@@ -80,11 +80,15 @@ Done:
 
 ## Remaining adjacent encodings (follow-ups, not done)
 
-- Anonymous `function` expressions lower to `(call "function" (params body))`,
+- ~~Anonymous `function` expressions lower to `(call "function" (params body))`,
   a sibling of `=>`. It is classified pure but its body is not yet a walk
   boundary, so a function expression's effects leak into the enclosing
-  function. Add `"function"` to the arrow boundary check (and named
-  `set!`+`function` collection) when needed.
+  function.~~ DONE (iteration 7): added `function-expr-call?`; it is now a
+  `walk-body` boundary (no leak into the enclosing function) and
+  `named-function` collects `set!`+`function` (bound function expressions are
+  separate call-graph nodes). Verified: `effects-infer-test` green (2 new
+  tests), all effect suites + `lower-typescript-test` + `lower-python-test` +
+  `examples-roundtrip-test` 44/44.
 - `const`/`let`/`var`-bound arrows lower to
   `(call "const"/"let"/"var" (list (set! NAME (call "=>" ...))))`; the `set!`
   sits one nesting level deeper than a bare function declaration, so those
@@ -131,3 +135,10 @@ Done:
   `lower-python-test`, `lower-typescript-test`, `esbuild-integration-test`,
   `emit-html-test`, and `examples-roundtrip-test` 44/44. End-to-end Python
   `llm.query` → `@__validate_effects` emit + re-parse confirmed.
+- Iteration 7 (DONE): anonymous `function` expressions. Added
+  `function-expr-call?` in `infer.rkt`; it is a `walk-body` boundary (no leak
+  into the enclosing function) and `named-function` collects `set!`+`function`
+  (bound function expressions are separate call-graph nodes). Verified:
+  `effects-infer-test` green (2 new tests), all effect suites,
+  `lower-typescript-test`, `lower-python-test`, and `examples-roundtrip-test`
+  44/44.

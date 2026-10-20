@@ -45,6 +45,7 @@
   (cond
     [(uir-fn? n) (void)]
     [(arrow-call? n) (void)]
+    [(function-expr-call? n) (void)]
     [(struct? n)
      (visit! n)
      (for ([f (in-list (cdr (vector->list (struct->vector n))))])
@@ -86,6 +87,14 @@
   (and (uir-call? c)
        (uir-symbol? (uir-call-callee c))
        (string=? (uir-symbol-name (uir-call-callee c)) "=>")
+       (= (length (uir-call-args c)) 2)))
+
+;; A JS/TS anonymous function expression: (call "function" (list params body)),
+;; a sibling of `=>`.
+(define (function-expr-call? c)
+  (and (uir-call? c)
+       (uir-symbol? (uir-call-callee c))
+       (string=? (uir-symbol-name (uir-call-callee c)) "function")
        (= (length (uir-call-args c)) 2)))
 
 ;; Field name of a `uir-get` as a symbol. Front ends differ on whether an
@@ -194,6 +203,7 @@
 ;;   (set! NAME (fn #f ...))                       — function declaration
 ;;   (set! NAME (call "async-fn"/"gen-fn" (fn)))   — async / generator decl
 ;;   (set! NAME (call "=>" (list params body)))    — arrow bound to a name
+;;   (set! NAME (call "function" (list params body))) — function expr bound
 ;; Returns #f for anything else.
 (define (named-function n)
   (and (uir-set!? n)
@@ -204,6 +214,7 @@
          (cond
            [fn (cons nm (uir-fn-body fn))]
            [(arrow-call? val) (cons nm (second (uir-call-args val)))]
+           [(function-expr-call? val) (cons nm (second (uir-call-args val)))]
            [else #f]))))
 
 ;; ── rows ────────────────────────────────────────────────────────────
