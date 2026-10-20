@@ -135,6 +135,22 @@
   (check-true (string-contains? emitted "new Date()"))
   (check-false (string-contains? emitted "new Date()()")))
 
+;; ── Curried calls (f(1)(2)) must not drop the RHS ──────────────────
+
+(let-values ([(uir emitted) (check-ts "const c = f(1)(2);")])
+  (check-true (string-contains? emitted "f(1)(2)")
+              "curried call with non-empty inner args is preserved"))
+
+(let-values ([(uir emitted) (check-ts "const r = withEffects({read: [], write: [\"db\"], max: 5})(fn);")])
+  (check-true (string-contains? emitted "withEffects(")
+              "curried withEffects callee survives lowering")
+  (check-true (string-contains? emitted "fn")
+              "curried withEffects keeps its function argument"))
+
+(let-values ([(uir emitted) (check-ts "const c = f(1)(2)(3);")])
+  (check-true (string-contains? emitted "f(1)(2)(3)")
+              "deeper curried call chain is preserved"))
+
 ;; ── If statement ────────────────────────────────────────────────────
 
 (let-values ([(uir emitted) (check-ts "if (true) { 1; } else { 2; }")])

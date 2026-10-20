@@ -61,19 +61,16 @@ Done:
   `git stash` of the emit change): ternary/conditional-rendering assertions at
   `tsx-integration-test.rkt:148-150,166` (`? (function()`, `: null`,
   `createTextNode(cond)`). Unrelated to effect emission.
-- **Curried-call lowering drops the RHS** (found iteration 4, blocks real TS
-  `withEffects(row)(fn)` end-to-end): in `lower-typescript/expr.rkt`,
-  `lower-single-expression`'s 2-kid call branch does not handle the CST shape
-  the grammar produces for `f(1)(2)` / `withEffects(row)(fn)` when the *inner*
-  call has non-empty args. That shape is
-  `singleExpression[ identifierName(f), singleExpression[ singleExpression[OpenParen e1 CloseParen], arguments[e2] ] ]`.
-  The branch only handles args-node tags `arguments` and `singleExpression`
-  with `>=3` kids (OpenParen…CloseParen) or `typeArguments`; the
-  `singleExpression[singleExpression[OpenParen…], arguments[…]` shape falls to
-  `[else (uir-null)]`, so `const c = f(1)(2);` lowers to `const c;`. Empty
-  inner calls (`make()(x)`) parse to a different shape and work. Fixing this
-  requires adding that case (reusing the OpenParen arg-extraction loop), then
-  re-running the 44-example round-trip suite to guard against regressions.
+- **Curried-call lowering drops the RHS** — FIXED (iteration 5):
+  `lower-single-expression`'s 2-kid call branch now routes through a recursive
+  `lower-call-args` helper that handles the `singleExpression[innerSuffix,
+  arguments]` shape the grammar produces for `f(1)(2)` /
+  `withEffects(row)(fn)`, plus the `arguments` and `OpenParen…CloseParen`
+  suffix shapes (previously separate branches). Verified:
+  `lower-typescript-test` green (3 new curried-call regressions) and
+  `examples-roundtrip-test` 44/44. End-to-end `withEffects({…})(fn)` now
+  lowers to the `(call (call (var withEffects) (list ROW)) (list FN))` shape
+  that `effects/ts-annot.rkt` extracts.
 
 ## Remaining adjacent encodings (follow-ups, not done)
 
@@ -111,3 +108,10 @@ Done:
   `effects-infer-test`, and `lower-typescript-test` all green. JSDoc `@effects`
   extraction remains open (comments not in CST); end-to-end `withEffects` on
   real TS source is blocked by the curried-call lowering bug documented above.
+- Iteration 5 (DONE): unblocked end-to-end `withEffects` by fixing
+  curried-call lowering (`f(1)(2)` dropped its RHS) in
+  `lower-typescript/expr.rkt`. Added a recursive `lower-call-args` helper
+  covering the `arguments`, `OpenParen…CloseParen`, and
+  `singleExpression[innerSuffix, arguments]` suffix shapes. Verified:
+  `lower-typescript-test` green (3 new regressions), `examples-roundtrip-test`
+  44/44, and all four effects suites green.
