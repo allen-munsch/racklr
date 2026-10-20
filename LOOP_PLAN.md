@@ -263,11 +263,32 @@ Done:
    `emit-html-test`, and `examples-roundtrip-test` 44/44. Only
    `lower-javascript-test` fails, pre-existing (documented).
 
+- Iteration 15 (DONE): comment preservation in the generated lexer/parser
+   (the JSDoc blocker). `generate-parser-module` gained
+   `#:preserve-comments?`, which makes the lexer emit `channel(HIDDEN)` tokens
+   (comments) instead of skipping them; the generated `parse` entry filters
+   them back out via a generated `hidden-token?` predicate before matching, so
+   the CST is byte-for-byte unchanged. Added `gen-and-load-comments` and a new
+   `gen-comments-test` suite asserting the default path still skips comments,
+   the preserve path keeps `SingleLineComment`/`MultiLineComment` tokens, and
+   parse CST shape is identical with/without comments. Verified:
+   `gen-comments-test`, `gen-javascript-test`, `gend-parser-test`,
+   `gen-rust-test`, `lower-typescript-test`, `lower-python-test`, all nine
+   effect suites, `tsx-integration-test`, `esbuild-integration-test`,
+   `emit-html-test`, `examples-roundtrip-test` 44/44.
+
 ## Still open (next iterations)
 
-- **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
-  generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
-  no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
+- **JSDoc `@effects` extraction** — comment preservation is now DONE
+  (iteration 15), so the blocker is cleared. Remaining: (a) plumb the preserved
+  comment tokens into `lower-program` (optional 4th arg) so lowering can read
+  them, (b) parse the `@effects {...}` row text into a `uir-effect-row` (the
+  text is valid JS object-literal syntax), and (c) attach that row to the
+  following top-level declaration, reusing the existing
+  `(call "__withEffects" (list row fn))` internal shape. The generated lexer
+  keeps `channel(HIDDEN)` tokens only when `#:preserve-comments?` is on, and
+  the generated `parse` filters them out before matching, so the CST is
+  unchanged.
 - ~~**`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
   enforced at runtime in either target, only emitted as data.~~ DONE
   (iteration 14): both `__perform` preambles now enforce the direction half of

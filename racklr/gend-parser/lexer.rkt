@@ -6,6 +6,7 @@
 (provide extract-option
          load-lexer-grammar-rules
          lexer-has-newline-rule?
+         lexer-rule-hidden?
          collect-parser-literals
          build-implicit-lexer-rules
          build-mode-map
@@ -34,6 +35,18 @@
   (for/or ([r lexer-rules])
     (and (eq? (any-tree-tag r) 'lexer-rule)
          (string=? (any-tree-text (first (any-tree-children r))) "NEWLINE"))))
+
+;; Is this lexer rule hidden from the parser (channel(HIDDEN) / channel(1))?
+;; With comment preservation these tokens are emitted (not skipped) so they can
+;; be inspected, then filtered out of the token list the parser matches.
+(define (lexer-rule-hidden? rule)
+  (define children (any-tree-children rule))
+  (and (> (length children) 2)
+       (for/or ([cmd (drop children 2)])
+         (define txt (any-tree-text cmd))
+         (and (string-prefix? txt "channel(")
+              (let ([ch (substring txt 8 (sub1 (string-length txt)))])
+                (or (string=? ch "HIDDEN") (string=? ch "1")))))))
 ;; ── Implicit Lexer Rules for Parser Literals ─────────────────────
 ;; In ANTLR4, string literals like '{' or 'true' used directly in parser
 ;; rules are implicitly tokenized. We extract them and generate lexer rules.
@@ -481,11 +494,13 @@
   (cons (cons 'default (append lexer-rules implicit-rules))
         mode-entries))
 
-(define (gen-tokenizer mode-map #:has-newline? [has-newline? #f] #:indent-tokens? [indent-tokens? #f])
+(define (gen-tokenizer mode-map #:has-newline? [has-newline? #f] #:indent-tokens? [indent-tokens? #f]
+                       #:preserve-comments? [preserve-comments? #f]
+                       #:hidden-names [hidden-names '()])
   (define mode-clauses
     (string-join
      (for/list ([(mode-name rules) (in-dict mode-map)])
-       (gen-mode-section mode-name rules))
+       (gen-mode-section mode-name rules preserve-comments?))
      "\n"))
   (define whitespace-handler
     (if has-newline?
@@ -513,17 +528,23 @@
    whitespace-handler
    mode-clauses
    "\n            [else (error 'tokenize \"unexpected char ~a in mode ~a at ~a:~a\" ch mode l c)])))))"
-   (if indent-tokens?
-       "\n(define (tokenize in) (insert-indents (tokenize-raw in)))"
-       "")
-   "\n"))
+    (if indent-tokens?
+        "\n(define (tokenize in) (insert-indents (tokenize-raw in)))"
+        "")
+    (if preserve-comments?
+        (format "\n(define hidden-token-types (list ~a))\n(define (hidden-token? t) (member (token-type t) hidden-token-types))"
+                (string-join
+                 (map (λ (n) (format "(string->symbol ~s)" n)) hidden-names)
+                 " "))
+        "")
+    "\n"))
 
-(define (gen-mode-section mode-name rules)
+(define (gen-mode-section mode-name rules preserve-comments?)
   ;; Generate a longest-match loop: try all matchers at position p,
   ;; pick the one that advances furthest. If tie, first defined wins.
   ;; This implements ANTLR4's maximal munch lexer strategy.
   (define clauses-str
-    (string-join (map gen-token-clause rules) "\n"))
+    (string-join (map (λ (rule) (gen-token-clause rule preserve-comments?)) rules) "\n"))
   (string-append
    (format "            [(eq? mode '~a)\n             (let __mloop ([__rules (list\n" mode-name)
    clauses-str
@@ -537,7 +558,7 @@
     "                         (__mloop (cdr __rules) (caar __r) (cadar __r) (cdar __rules))\n"
      "                         (__mloop (cdr __rules) __best-np __best-v __best-handle)))))]"))
 
-(define (gen-token-clause rule)
+(define (gen-token-clause rule preserve-comments?)
   (define children (any-tree-children rule))
   (define raw-name (any-tree-text (first children)))
   (define mangled (mangle raw-name))
@@ -549,11 +570,11 @@
     (if (regexp-match? #rx"^[a-zA-Z_][a-zA-Z0-9_]*$" raw-name)
         (format "'~a" raw-name)
         (format "(string->symbol ~s)" raw-name)))
-  (define cmd-body (gen-command-body commands token-expr raw-name))
+  (define cmd-body (gen-command-body commands token-expr raw-name preserve-comments?))
   (format "               (cons ~a-match (lambda (np v) ~a))"
           mangled cmd-body))
 
-(define (gen-command-body commands token-expr raw-name)
+(define (gen-command-body commands token-expr raw-name preserve-comments?)
   (define inner-body
     (if (null? commands)
         (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) ~a ~a ~a)" token-expr "mode" "mstack" "pending")
@@ -575,10 +596,13 @@
                        (loop (cdr cmds) #t more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "channel(")
                      ;; channel(HIDDEN) (== channel(1)) tokens are invisible to the
-                     ;; parser; we have no channels, so treat them like `skip`.
+                     ;; parser. By default we have no channels, so treat them like
+                     ;; `skip`. With comment preservation they are emitted (so the
+                     ;; caller can inspect them) and filtered out at parse time.
                      (define ch (substring txt 8 (sub1 (string-length txt))))
                      (define hidden? (or (string=? ch "HIDDEN") (string=? ch "1")))
-                     (loop (cdr cmds) (or skip? hidden?) more? emit-type next-mode next-mstack next-pending)]
+                     (define skip-token? (and hidden? (not preserve-comments?)))
+                     (loop (cdr cmds) (or skip? skip-token?) more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "pushMode(")
                      (define raw-mname (substring txt 9 (sub1 (string-length txt))))
                      (define mname (if (string=? raw-mname "DEFAULT_MODE") "default" raw-mname))
