@@ -49,18 +49,24 @@ Done:
      Python's `@effects(...)`. Unit-tested on hand-built UIR; the row feeds
      the iteration-3 emit guard. JSDoc `@effects` extraction still open (needs
      comment preservation, not available in the CST).
-5. Inference/annotation is not wired into any pipeline entry point today
-   (unit tests only).
+5. ~~Inference/annotation is not wired into any pipeline entry point today
+   (unit tests only).~~ DONE (iteration 6): `emit-python` and `emit-javascript`
+   now run `annotate-effects` on their input before emitting, so unannotated
+   programs get inferred effect rows emitted as runtime guards. To make that
+   correct, `annotate-effects` now (a) preserves hand-written rows, (b) skips
+   empty inferred rows, and (c) drops `unknown` entries when materializing a
+   row for emission (the runtime guards reject the `unknown` modality).
+   Also fixed the Python guard preamble's multi-line docstring, which the
+   generated Python3 lexer cannot re-parse.
 
 ## Unrelated bugs found (do not fix here)
 
 - `lower-javascript-test.rkt` fails pre-existing (confirmed via `git stash`):
   `cst-node-children: contract violation, expected: cst-node?`. A JS lowering
   bug, not effects-related.
-- `tsx-integration-test.rkt` fails pre-existing (4 failures, confirmed via
-  `git stash` of the emit change): ternary/conditional-rendering assertions at
-  `tsx-integration-test.rkt:148-150,166` (`? (function()`, `: null`,
-  `createTextNode(cond)`). Unrelated to effect emission.
+- `tsx-integration-test.rkt` now passes (verified iteration 6). The 4
+  ternary/conditional-rendering failures documented in earlier iterations were
+  fixed by the iteration-5 curried-call lowering change.
 - **Curried-call lowering drops the RHS** — FIXED (iteration 5):
   `lower-single-expression`'s 2-kid call branch now routes through a recursive
   `lower-call-args` helper that handles the `singleExpression[innerSuffix,
@@ -115,3 +121,13 @@ Done:
   `singleExpression[innerSuffix, arguments]` suffix shapes. Verified:
   `lower-typescript-test` green (3 new regressions), `examples-roundtrip-test`
   44/44, and all four effects suites green.
+- Iteration 6 (DONE): gap 5 — wired inference into the emitters.
+  `emit-python`/`emit-javascript` now call `annotate-effects` first; `infer.rkt`
+  preserves explicit rows, skips empty inferred rows, and drops `unknown`
+  entries before materializing a row for emission. Fixed the Python preamble's
+  multi-line docstring (generated Python3 lexer cannot re-parse it). Verified:
+  `effects-infer-test` (3 new tests), `effects-js-emit-test` (1 new),
+  `effects-python-emit-test` (new suite), all other effects suites,
+  `lower-python-test`, `lower-typescript-test`, `esbuild-integration-test`,
+  `emit-html-test`, and `examples-roundtrip-test` 44/44. End-to-end Python
+  `llm.query` → `@__validate_effects` emit + re-parse confirmed.

@@ -13,6 +13,8 @@
          racklr/emit-javascript)
 
 (define (sym s) (uir-symbol s))
+(define (v s) (uir-var (uir-symbol s)))
+(define (jsdot b f) (uir-call (sym "dot") (list b (sym f))))
 
 (define (llm-row)
   (uir-effect-row
@@ -69,10 +71,28 @@
   (check-true (string-contains? out "__withEffects({}, ")
               "an explicitly empty row still guards"))
 
+(define (test-inferred-effects-emit-guard)
+  ;; emit-javascript runs inference, so an unannotated declaration that
+  ;; performs an effect is wrapped in __withEffects without a hand-written row.
+  (define p (decl (uir-set! (sym "summarize")
+                            (uir-fn #f '()
+                                    (uir-block
+                                     (list (uir-call (jsdot (v "llm") "query")
+                                                     (list (uir-string "hi")))))
+                                    #f #f))))
+  (define out (emit-javascript p))
+  (check-true (string-contains? out "function __withEffects")
+              "preamble emitted for inferred effects")
+  (check-true (string-contains? out "const summarize = __withEffects(")
+              "inferred declaration wrapped")
+  (check-true (string-contains? out "\"llm\"")
+              "inferred llm row emitted"))
+
 (module+ main
   (test-no-effects-no-preamble)
   (test-declaration-with-effects-emits-guard)
   (test-fn-expression-with-effects-emits-guard)
   (test-async-declaration-with-effects)
   (test-empty-row-still-guarded)
+  (test-inferred-effects-emit-guard)
   (displayln "All JS emit effect-guard tests passed."))

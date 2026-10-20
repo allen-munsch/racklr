@@ -313,8 +313,27 @@
 ;; function declarations (writing back into the wrapped uir-fn).
 (define (annotate-effects program)
   (define rows (infer-effects program))
+  ;; Materialize an inferred row for emission: 'unknown is a checker signal
+  ;; ("could not verify"), not a runtime effect, and the runtime guards reject
+  ;; the 'unknown modality. So it is dropped here; an all-unknown row becomes
+  ;; empty and the function stays unannotated.
+  (define (concrete-row r)
+    (uir-effect-row
+     (filter (λ (e) (not (eq? (effect-name-symbol e) 'unknown)))
+             (uir-effect-row-entries r))))
   (define (with-effects fn nm)
-    (struct-copy uir-fn fn [effects (hash-ref rows nm (uir-fn-effects fn))]))
+    (define existing (uir-fn-effects fn))
+    (define inferred (hash-ref rows nm #f))
+    (cond
+      ;; A hand-written row wins: it carries budgets/scopes inference cannot
+      ;; recover, so re-inference must not overwrite it.
+      [(uir-effect-row? existing) fn]
+      [(and inferred (pair? (uir-effect-row-entries inferred)))
+       (define concrete (concrete-row inferred))
+       (if (pair? (uir-effect-row-entries concrete))
+           (struct-copy uir-fn fn [effects concrete])
+           fn)]
+      [else fn]))
   (define (rewrite-value val nm)
     (cond
       [(uir-fn? val) (with-effects val nm)]

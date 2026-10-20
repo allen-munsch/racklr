@@ -1,6 +1,7 @@
 #lang racket
 
-(require racklr/uir)
+(require racklr/uir
+         racklr/effects/infer)
 
 (provide emit-python)
 
@@ -222,10 +223,7 @@
 (define (effects-guard-preamble)
   (string-append
    "def __validate_effects(row):\n"
-   "    \"\"\"Validate an effect row and attach it to the decorated function.\n"
-   "\n"
-   "    Pure-Python runtime guard: no FFI, no shared library.\n"
-   "    \"\"\"\n"
+   "    \"\"\"Validate an effect row and attach it to the decorated function.\"\"\"\n"
    "    _valid_modalities = (\"may\", \"must\", \"must-not\")\n"
    "    for _name, _entry in row.items():\n"
    "        _modality = _entry.get(\"modality\", \"may\")\n"
@@ -535,11 +533,12 @@
 ;; ── Top-level ──────────────────────────────────────────────────────
 
 (define (emit-python uir)
+  (define annotated (annotate-effects uir))
   (define body
-    (cond [(uir-block? uir)
-           (emit-body uir 0)]
-          [else (emit-stmt uir 0)]))
-  (if (program-has-effects? uir)
+    (cond [(uir-block? annotated)
+           (emit-body annotated 0)]
+          [else (emit-stmt annotated 0)]))
+  (if (program-has-effects? annotated)
       (string-append (effects-guard-preamble) "\n\n" body)
       body))
 

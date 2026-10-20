@@ -1,6 +1,7 @@
 #lang racket
 
-(require racklr/uir)
+(require racklr/uir
+         racklr/effects/infer)
 
 (provide emit-javascript)
 
@@ -612,8 +613,9 @@
     [else #f]))
 
 (define (emit-javascript uir)
-  (define body (emit-js uir))
-  (if (program-has-effects? uir)
+  (define annotated (annotate-effects uir))
+  (define body (emit-js annotated))
+  (if (program-has-effects? annotated)
       (string-append (effects-guard-preamble) "\n\n" body)
       body))
 

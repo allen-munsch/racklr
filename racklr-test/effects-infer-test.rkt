@@ -204,6 +204,34 @@
   (check-true (uir-fn? f))
   (check-equal? (modality (uir-fn-effects f) 'llm) 'may))
 
+(define (test-annotate-preserves-explicit-row)
+  ;; A hand-written row (budgets/scopes) wins over inference; inference must
+  ;; not clobber it with the row inferred from the body.
+  (define explicit
+    (uir-effect-row
+     (list (uir-effect-entry (sym "cache") 'must-not '() 3 #f))))
+  (define p (prog (struct-copy uir-fn (fn "f" (uir-call (dot (v "llm") "query") '()))
+                                 [effects explicit])))
+  (define f (car (uir-block-stmts (annotate-effects p))))
+  (check-true (uir-fn? f))
+  (check-equal? (row-names (uir-fn-effects f)) '(cache))
+  (check-equal? (modality (uir-fn-effects f) 'cache) 'must-not))
+
+(define (test-annotate-skips-empty-inferred)
+  ;; A pure function with no annotation stays unannotated (effects field #f),
+  ;; so emitters do not treat it as effect-using.
+  (define p (prog (fn "plain" (uir-null))))
+  (define f (car (uir-block-stmts (annotate-effects p))))
+  (check-false (uir-fn-effects f)))
+
+(define (test-annotate-skips-unknown-only)
+  ;; 'unknown is a checker signal ("could not verify"), not a runtime effect.
+  ;; A function whose inferred row is only 'unknown must not gain a runtime
+  ;; guard, since the guard rejects the 'unknown modality.
+  (define p (prog (fn "f" (uir-call (v "len") '()))))
+  (define f (car (uir-block-stmts (annotate-effects p))))
+  (check-false (uir-fn-effects f)))
+
 ;; ── JS/TS function-declaration encodings ────────────────────────────
 ;; TS lowers `function NAME(...) {...}` to (set! NAME (fn #f ...)),
 ;; async to (set! NAME (call "async-fn" (list (fn #f ...)))), generator to
@@ -304,6 +332,9 @@
   (test-synthetic-operator-pure)
   (test-synthetic-dot-pure)
   (test-annotate-writes-back)
+  (test-annotate-preserves-explicit-row)
+  (test-annotate-skips-empty-inferred)
+  (test-annotate-skips-unknown-only)
   (test-set!-fn-decl-collected)
   (test-set!-async-fn-decl)
   (test-set!-gen-fn-decl)
