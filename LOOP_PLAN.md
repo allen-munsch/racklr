@@ -185,14 +185,35 @@ Done:
   `const f = withEffects({llm:{max:5}})(() => llm.query("hi"))` →
   `const f = __withEffects({"llm":{"modality":"may","max":5}}, () => llm.query("hi"))`
   with the preamble.
+- Iteration 10 (DONE): JS/TS runtime enforcement (the "effect handler" half).
+  Direct-effect call sites (`llm.query`, `db.write`, `fetch`, …) are now
+  instrumented at emit time as
+  `__perform("llm", "query", function() { return llm.query(...); })`; the
+  `__withEffects` preamble grew an ambient effect-context stack and enforces,
+  against the operations a function actually performs: absence/prohibition and
+  `must-not` (throw "effect prohibited"), the `ops` whitelist (throw "effect
+  operation prohibited"), `max` budgets per invocation (throw "effect budget
+  exceeded"), and `must` obligations on completion (throw "effect obligation
+  unmet", checked after promise settlement for async fns). Added
+  `effect-op-of-callee` to `infer.rkt` (last field of a dotted chain, or the
+  bare callee name) and `program-has-effects?` now also detects top-level
+  direct-effect calls so the preamble is emitted when a bare call is
+  instrumented. Verified with a new node-executed suite
+  (`effects-js-runtime-test.rkt`, 11 tests: budget, must-not, absence, ops,
+  must met/unmet, and post-`await` budget/must) plus `effects-js-emit-test`
+  (3 new + 2 updated), `effects-infer-test` (5 new), all eight effect suites,
+  `lower-typescript-test`, `lower-python-test`, `examples-roundtrip-test`,
+  `esbuild-integration-test`, `emit-html-test`.
 
 ## Still open (next iterations)
 
 - **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
   generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
   no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
-- **Runtime enforcement** — `__withEffects` / `__validate_effects` validate the
-  row's *shape* and attach `fn.__effects__`, but do not yet enforce `max`
-  budgets, `must` obligations, or `must-not`/scope prohibitions against the
-  operations a function actually performs. This is the "effect handler"
-  half of the goal and the natural next non-trivial slice.
+- **Python runtime enforcement** — the JS/TS `__perform` instrumentation and
+  `__withEffects` context stack are done (iteration 10), but `emit-python.rkt`
+  still only validates the row's shape in `@__validate_effects`. Port the same
+  call-site instrumentation (`__perform`/context stack, or a Python equivalent)
+  to the Python emitter. Also still open: `scope` (`reads=`/`writes=`)
+  prohibitions are not enforced at runtime in either target, only emitted as
+  data.

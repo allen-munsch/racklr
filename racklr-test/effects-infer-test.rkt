@@ -183,6 +183,27 @@
   (define p (prog (fn "f" (uir-call (v "fetch") (list (uir-string "/x"))))))
   (check-equal? (modality (hash-ref (infer-effects p) 'f) 'network) 'may))
 
+;; ── effect-op-of-callee ─────────────────────────────────────────────
+;; The operation performed by a direct-effect callee, used by the emitters to
+;; instrument runtime guards with the specific operation.
+
+(define (test-op-dotted-llm-query)
+  (check-equal? (effect-op-of-callee (jsdot (v "llm") "query")) 'query))
+
+(define (test-op-dotted-nested-last-field)
+  (check-equal? (effect-op-of-callee (jsdot (jsdot (v "db") "user") "update")) 'update))
+
+(define (test-op-dotted-objects-filter)
+  (check-equal? (effect-op-of-callee (jsdot (jsdot (v "User") "objects") "filter")) 'filter))
+
+(define (test-op-bare-fetch)
+  (check-equal? (effect-op-of-callee (v "fetch")) 'fetch))
+
+(define (test-op-python-get-string-field)
+  (check-equal? (effect-op-of-callee
+                 (uir-get (uir-get (v "Order") (uir-string "objects")) (uir-string "all")))
+                'all))
+
 ;; ── synthetic operator/statement calls are pure, not `unknown` ──────
 
 (define (test-synthetic-operator-pure)
@@ -437,6 +458,11 @@
   (test-js-dot-redis-cache)
   (test-js-dot-anthropic-llm)
   (test-js-dot-bare-fetch-network)
+  (test-op-dotted-llm-query)
+  (test-op-dotted-nested-last-field)
+  (test-op-dotted-objects-filter)
+  (test-op-bare-fetch)
+  (test-op-python-get-string-field)
   (test-synthetic-operator-pure)
   (test-synthetic-dot-pure)
   (test-annotate-writes-back)

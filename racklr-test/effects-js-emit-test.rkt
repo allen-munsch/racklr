@@ -118,8 +118,8 @@
               "preamble emitted for a const-bound arrow")
   (check-true (string-contains? out "const f = __withEffects(")
               "const-bound arrow wrapped through the guard")
-  (check-true (string-contains? out "() => llm.query(\"hi\")")
-              "arrow body preserved inside the guard"))
+  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+              "arrow body is instrumented inside the guard"))
 
 (define (test-let-arrow-emits-guard)
   (define out (emit-javascript (decl (var-decl "let" (uir-set! (sym "f") (llm-arrow))))))
@@ -160,8 +160,8 @@
               "row name emitted")
   (check-true (string-contains? out "\"max\": 5")
               "budget emitted")
-  (check-true (string-contains? out "() => llm.query(\"hi\")")
-              "wrapped arrow body preserved"))
+  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+              "wrapped arrow body is instrumented"))
 
 (define (test-bare-withEffects-emits-guard)
   (define w (with-effects-wrapper (llm-constraint-record) (llm-arrow)))
@@ -170,6 +170,36 @@
               "preamble emitted for a bare withEffects annotation")
   (check-true (string-contains? out "__withEffects(")
               "bare withEffects wrapper rendered as the guard"))
+
+(define (test-direct-effect-call-instrumented)
+  ;; A direct effect call is wrapped in __perform(name, op, thunk) so the
+  ;; runtime guard can enforce budgets/prohibitions at call time.
+  (define p (decl (uir-set! (sym "summarize")
+                            (uir-fn #f '()
+                                    (uir-block
+                                     (list (uir-call (jsdot (v "llm") "query")
+                                                     (list (uir-string "hi")))))
+                                    #f #f))))
+  (define out (emit-javascript p))
+  (check-true (string-contains? out "__perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+              "direct llm.query call is instrumented"))
+
+(define (test-preamble-defines-perform)
+  (define out (emit-javascript (decl (named-fn "summarize" (llm-row)))))
+  (check-true (string-contains? out "function __perform(")
+              "preamble defines __perform")
+  (check-true (string-contains? out "__effects_stack")
+              "preamble defines the effect-context stack"))
+
+(define (test-top-level-effect-call-emits-preamble)
+  ;; A direct effect call outside any function has no effect row, but it is
+  ;; instrumented, so the preamble (with __perform) must still be emitted.
+  (define out (emit-javascript (decl (uir-call (jsdot (v "llm") "query")
+                                                (list (uir-string "hi"))))))
+  (check-true (string-contains? out "function __perform(")
+              "top-level effect call still emits the runtime preamble")
+  (check-true (string-contains? out "__perform(\"llm\", \"query\",")
+              "top-level effect call is instrumented"))
 
 (module+ main
   (test-no-effects-no-preamble)
@@ -185,4 +215,7 @@
   (test-const-pure-arrow-no-guard)
   (test-withEffects-annotation-emits-guard)
   (test-bare-withEffects-emits-guard)
+  (test-direct-effect-call-instrumented)
+  (test-preamble-defines-perform)
+  (test-top-level-effect-call-emits-preamble)
   (displayln "All JS emit effect-guard tests passed."))

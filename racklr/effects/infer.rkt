@@ -22,6 +22,7 @@
   collect-functions
   classify-call
   direct-effect-of-callee
+  effect-op-of-callee
   empty-row)
 
 ;; ── generic structural walk ─────────────────────────────────────────
@@ -127,6 +128,18 @@
     [(uir-var? c) (string->symbol (uir-symbol-name (uir-var-name c)))]
     [(uir-symbol? c) (string->symbol (uir-symbol-name c))]
     [else #f]))
+
+;; Operation performed by a callee: the last field of a dotted chain, or the
+;; bare callee name. Used by the emitters to instrument runtime guards with the
+;; specific operation being performed. Returns a symbol or #f.
+(define (effect-op-of-callee c)
+  (let loop ([c c])
+    (cond
+      [(uir-get? c) (get-field-symbol (uir-get-field c))]
+      [(dot-call? c) (get-field-symbol (second (uir-call-args c)))]
+      [(uir-var? c) (string->symbol (uir-symbol-name (uir-var-name c)))]
+      [(uir-symbol? c) (string->symbol (uir-symbol-name c))]
+      [else #f])))
 
 ;; Directly-performed effect for a call's callee, or #f.
 (define (direct-effect-of-callee c)

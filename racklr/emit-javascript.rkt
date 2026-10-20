@@ -37,6 +37,15 @@
 
 (define prefix-ops (set "prefix++" "prefix--"))
 
+;; Wrap a directly-performed effect call in the runtime guard: the ambient
+;; effect context (established by __withEffects) enforces must-not / ops /
+;; budget against the specific operation, then runs the original call.
+(define (emit-perform name op call-str)
+  (format "__perform(~s, ~s, function() { return ~a; })"
+          (symbol->string name)
+          (if op (symbol->string op) "")
+          call-str))
+
 (define (emit-js uir)
   (match uir
     [(uir-null) "null"]
@@ -319,9 +328,13 @@
                     op-name
                     (emit-js (second args)))]
            [else
-            (let ([fn-str (emit-js callee)]
-                  [args-str (string-join (map emit-js args) ", ")])
-              (format "~a(~a)" fn-str args-str))])]
+            (define fn-str (emit-js callee))
+            (define args-str (string-join (map emit-js args) ", "))
+            (define call-str (format "~a(~a)" fn-str args-str))
+            (define eff (direct-effect-of-callee callee))
+            (if eff
+                (emit-perform eff (effect-op-of-callee callee) call-str)
+                call-str)])]
     
     [(uir-if test conseq altern)
      (if (or (uir-block? conseq) (uir-block? altern))
@@ -597,6 +610,27 @@
 
 (define (effects-guard-preamble)
   (string-append
+   "var __effects_stack = [];\n"
+   "function __effects_current() {\n"
+   "  return __effects_stack.length ? __effects_stack[__effects_stack.length - 1] : null;\n"
+   "}\n"
+   "function __perform(name, op, thunk) {\n"
+   "  var _ctx = __effects_current();\n"
+   "  if (_ctx) {\n"
+   "    var _e = _ctx.row[name];\n"
+   "    if (!_e) throw new Error(\"effect prohibited: \" + name);\n"
+   "    var _m = _e.modality || \"may\";\n"
+   "    if (_m === \"must-not\") throw new Error(\"effect prohibited: \" + name);\n"
+   "    var _ops = _e.ops || [];\n"
+   "    if (_ops.length && _ops.indexOf(op) === -1) throw new Error(\"effect operation prohibited: \" + name + \".\" + op);\n"
+   "    var _perf = _ctx.performed;\n"
+   "    if (!_perf[name]) _perf[name] = { any: 0 };\n"
+   "    if (_e.max != null && _perf[name].any >= _e.max) throw new Error(\"effect budget exceeded: \" + name);\n"
+   "    _perf[name].any += 1;\n"
+   "    _perf[name][op] = (_perf[name][op] || 0) + 1;\n"
+   "  }\n"
+   "  return thunk();\n"
+   "}\n"
    "function __withEffects(row, fn) {\n"
    "  var _valid = [\"may\", \"must\", \"must-not\"];\n"
    "  for (var _k in row) {\n"
@@ -606,15 +640,56 @@
    "    var _b = _e.max;\n"
    "    if (_b != null && (typeof _b !== \"number\" || _b < 0)) throw new Error(\"invalid effect budget: \" + _b);\n"
    "  }\n"
+   "  function _check(frame) {\n"
+   "    for (var _k in row) {\n"
+   "      var _e = row[_k];\n"
+   "      if ((_e.modality || \"may\") === \"must\") {\n"
+   "        var _perf = frame.performed[_k];\n"
+   "        var _ops = _e.ops || [];\n"
+   "        if (_ops.length) {\n"
+   "          for (var _i = 0; _i < _ops.length; _i++) {\n"
+   "            if (!_perf || !(_perf[_ops[_i]] > 0)) throw new Error(\"effect obligation unmet: \" + _k + \".\" + _ops[_i]);\n"
+   "          }\n"
+   "        } else if (!_perf || !(_perf.any > 0)) {\n"
+   "          throw new Error(\"effect obligation unmet: \" + _k);\n"
+   "        }\n"
+   "      }\n"
+   "    }\n"
+   "  }\n"
+   "  function wrapped() {\n"
+   "    var frame = { row: row, performed: {} };\n"
+   "    __effects_stack.push(frame);\n"
+   "    var _r;\n"
+   "    try {\n"
+   "      _r = fn.apply(this, arguments);\n"
+   "    } catch (e) {\n"
+   "      __effects_stack.pop();\n"
+   "      throw e;\n"
+   "    }\n"
+   "    if (_r && typeof _r.then === \"function\") {\n"
+   "      var _settle = function() { __effects_stack.pop(); };\n"
+   "      return _r.then(function(v) { _settle(); _check(frame); return v; },\n"
+   "                     function(e) { _settle(); throw e; });\n"
+   "    }\n"
+   "    try {\n"
+   "      _check(frame);\n"
+   "      return _r;\n"
+   "    } finally {\n"
+   "      __effects_stack.pop();\n"
+   "    }\n"
+   "  }\n"
    "  fn.__effects__ = row;\n"
-   "  return fn;\n"
+   "  wrapped.__effects__ = row;\n"
+   "  return wrapped;\n"
    "}"))
 
 (define (program-has-effects? uir)
   (cond
     [(uir-effect-row? uir) #t]
     [(struct? uir)
-     (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
+     (or (and (uir-call? uir)
+              (direct-effect-of-callee (uir-call-callee uir)))
+         (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
            (program-has-effects? f)))]
     [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
