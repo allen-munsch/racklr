@@ -13,7 +13,8 @@ Done:
   subtyping, `mutator-ok?`.
 - Effect inference (`racklr/effects/infer.rkt`): fixpoint over the call graph
   with direct-effect heuristics.
-- Python: `@effects(...)` annotation extraction + `__validate_effects` emit.
+- Python: `@effects(...)` annotation extraction + `@__withEffects` runtime
+  enforcement emit (`__perform` instrumentation + ambient context stack).
 - Clojure: `^{:effects ...}` annotation + emit.
 - Koka: effect decl / row / handler lower+emit.
 
@@ -185,6 +186,22 @@ Done:
   `const f = withEffects({llm:{max:5}})(() => llm.query("hi"))` →
   `const f = __withEffects({"llm":{"modality":"may","max":5}}, () => llm.query("hi"))`
   with the preamble.
+- Iteration 11 (DONE): Python runtime enforcement. Ported the JS/TS
+  `__perform` call-site instrumentation and ambient effect-context stack to
+  `emit-python.rkt`. `emit-expr` now wraps a directly-performed effect call
+  (via `direct-effect-of-callee`/`effect-op-of-callee`) as
+  `__perform("llm", "query", lambda: llm.query(...))`; the
+  `@__validate_effects` guard was replaced with `@__withEffects`, whose preamble
+  grows the same context stack and enforces absence/prohibition, `must-not`,
+  the `ops` whitelist, `max` budgets, and sync `must` obligations on completion
+  (checked in `finally` so the frame always pops). `program-has-effects?` now
+  also detects top-level direct-effect calls. Verified with a new
+  python3-executed suite (`effects-python-runtime-test.rkt`, 8 tests) plus
+  `effects-python-emit-test` (rewritten: 6 tests incl. `__perform` instrumentation
+  and top-level-call preamble), `lower-python-test` (2 assertions renamed), all
+  eight effect suites, `lower-typescript-test`, `examples-roundtrip-test` 44/44,
+  `esbuild-integration-test`, `emit-html-test`; emitted preamble + guarded
+  function re-parse cleanly through the generated Python3 lexer.
 - Iteration 10 (DONE): JS/TS runtime enforcement (the "effect handler" half).
   Direct-effect call sites (`llm.query`, `db.write`, `fetch`, …) are now
   instrumented at emit time as
@@ -210,10 +227,10 @@ Done:
 - **JSDoc `@effects` extraction** — still blocked: comments are dropped by the
   generated lexer (`channel(HIDDEN)` is treated like `skip`), so the CST has
   no comment tokens. Needs comment preservation in `gend-parser/lexer.rkt`.
-- **Python runtime enforcement** — the JS/TS `__perform` instrumentation and
-  `__withEffects` context stack are done (iteration 10), but `emit-python.rkt`
-  still only validates the row's shape in `@__validate_effects`. Port the same
-  call-site instrumentation (`__perform`/context stack, or a Python equivalent)
-  to the Python emitter. Also still open: `scope` (`reads=`/`writes=`)
-  prohibitions are not enforced at runtime in either target, only emitted as
-  data.
+- **Python async `must` obligations** — `async def` lowers via `lower-funcdef`
+  without an async marker in the UIR, so the Python `__withEffects` wrapper
+  cannot await promise/coroutine settlement before checking `must` obligations
+  (the JS target checks after promise settlement). Async `must` is therefore
+  not yet enforced on the Python target; sync `must` is.
+- **`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
+  enforced at runtime in either target, only emitted as data.

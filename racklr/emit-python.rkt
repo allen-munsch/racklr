@@ -216,14 +216,45 @@
     ", ")
    "}"))
 
+;; Wrap a directly-performed effect call in the runtime guard: the ambient
+;; effect context (established by the __withEffects decorator) enforces
+;; must-not / ops / budget against the specific operation, then runs the
+;; original call.
+(define (emit-perform name op call-str)
+  (format "__perform(~s, ~s, lambda: ~a)"
+          (symbol->string name)
+          (if op (symbol->string op) "")
+          call-str))
+
 (define (emit-effects-guard fn indent)
   (define spc (make-string (* indent 4) #\space))
-  (string-append spc "@__validate_effects(" (emit-effect-row (uir-fn-effects fn)) ")"))
+  (string-append spc "@__withEffects(" (emit-effect-row (uir-fn-effects fn)) ")"))
 
 (define (effects-guard-preamble)
   (string-append
-   "def __validate_effects(row):\n"
-   "    \"\"\"Validate an effect row and attach it to the decorated function.\"\"\"\n"
+   "__effects_stack = []\n"
+   "def __effects_current():\n"
+   "    return __effects_stack[-1] if __effects_stack else None\n"
+   "def __perform(name, op, thunk):\n"
+   "    ctx = __effects_current()\n"
+   "    if ctx is not None:\n"
+   "        entry = ctx[\"row\"].get(name)\n"
+   "        if entry is None:\n"
+   "            raise RuntimeError(\"effect prohibited: \" + name)\n"
+   "        modality = entry.get(\"modality\", \"may\")\n"
+   "        if modality == \"must-not\":\n"
+   "            raise RuntimeError(\"effect prohibited: \" + name)\n"
+   "        ops = entry.get(\"ops\", [])\n"
+   "        if ops and op not in ops:\n"
+   "            raise RuntimeError(\"effect operation prohibited: \" + name + \".\" + op)\n"
+   "        performed = ctx[\"performed\"]\n"
+   "        performed.setdefault(name, {\"any\": 0})\n"
+   "        if entry.get(\"max\") is not None and performed[name][\"any\"] >= entry[\"max\"]:\n"
+   "            raise RuntimeError(\"effect budget exceeded: \" + name)\n"
+   "        performed[name][\"any\"] += 1\n"
+   "        performed[name][op] = performed[name].get(op, 0) + 1\n"
+   "    return thunk()\n"
+   "def __withEffects(row):\n"
    "    _valid_modalities = (\"may\", \"must\", \"must-not\")\n"
    "    for _name, _entry in row.items():\n"
    "        _modality = _entry.get(\"modality\", \"may\")\n"
@@ -232,15 +263,37 @@
    "        _budget = _entry.get(\"max\")\n"
    "        if _budget is not None and (not isinstance(_budget, int) or _budget < 0):\n"
    "            raise ValueError(\"invalid effect budget: %r\" % (_budget,))\n"
+   "    def _check(frame):\n"
+   "        for _k, _entry in row.items():\n"
+   "            if _entry.get(\"modality\", \"may\") == \"must\":\n"
+   "                _perf = frame[\"performed\"].get(_k)\n"
+   "                _ops = _entry.get(\"ops\", [])\n"
+   "                if _ops:\n"
+   "                    for _op in _ops:\n"
+   "                        if not _perf or not (_perf.get(_op, 0) > 0):\n"
+   "                            raise RuntimeError(\"effect obligation unmet: \" + _k + \".\" + _op)\n"
+   "                elif not _perf or not (_perf.get(\"any\", 0) > 0):\n"
+   "                    raise RuntimeError(\"effect obligation unmet: \" + _k)\n"
    "    def _decorator(func):\n"
-   "        func.__effects__ = row\n"
-   "        return func\n"
+   "        def wrapped(*args, **kwargs):\n"
+   "            _frame = {\"row\": row, \"performed\": {}}\n"
+   "            __effects_stack.append(_frame)\n"
+   "            try:\n"
+   "                _result = func(*args, **kwargs)\n"
+   "                _check(_frame)\n"
+   "                return _result\n"
+   "            finally:\n"
+   "                __effects_stack.pop()\n"
+   "        wrapped.__effects__ = row\n"
+   "        return wrapped\n"
    "    return _decorator"))
 
 (define (program-has-effects? uir)
   (cond
     [(struct? uir)
-     (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
+     (or (and (uir-call? uir)
+              (direct-effect-of-callee (uir-call-callee uir)))
+         (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
            (program-has-effects? f)))]
     [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
@@ -429,8 +482,12 @@
                         [(and name (= (length args) 1) (equal? name "not"))
                          (string-append "not " (emit-expr (first args)))]
                         [else
-                         (string-append (emit-expr callee)
-                                        "(" (string-join (map emit-expr args) ", ") ")")]))))]
+                         (let* ([call-str (string-append (emit-expr callee)
+                                                         "(" (string-join (map emit-expr args) ", ") ")")]
+                                [eff (direct-effect-of-callee callee)])
+                           (if eff
+                               (emit-perform eff (effect-op-of-callee callee) call-str)
+                               call-str))]))))]
         [(uir-let? uir)
          (string-append "(" (uir-symbol-name (uir-let-name uir))
                         " := " (emit-expr (uir-let-value uir))
