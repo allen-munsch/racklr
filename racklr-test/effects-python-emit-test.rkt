@@ -74,7 +74,7 @@
   (define out (emit-python (prog (fn "summarize"
                                      (uir-call (dot (v "llm") "query")
                                                (list (uir-string "hi")))))))
-  (check-true (string-contains? out "__perform(\"llm\", \"query\", lambda:")
+  (check-true (string-contains? out "__perform(\"llm\", \"query\", [\"hi\"], lambda:")
               "direct llm.query call is instrumented"))
 
 (define (test-preamble-defines-perform)

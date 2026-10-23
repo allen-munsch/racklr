@@ -79,9 +79,20 @@
       (uir-effect-row? v)
       (uir-effect-entry? v)
       (uir-subtype? v)
-      (uir-effect-decl? v)
-      (uir-effect-op? v)
-      (uir-effect-handler? v)))
+       (uir-effect-decl? v)
+       (uir-effect-op? v)
+       (uir-effect-handler? v)
+       (uir-eff-system? v)
+       (uir-eff-capability? v)
+       (uir-eff-capability-op? v)
+       (uir-eff-ref? v)
+       (uir-eff-given? v)
+       (uir-eff-handler? v)
+       (uir-eff-component? v)
+       (uir-eff-state? v)
+       (uir-eff-action? v)
+       (uir-eff-invariant? v)
+       (uir-eff-policy? v)))
 
 (define (uir-tag v)
   (cond [(uir-null? v)   'null]
@@ -152,6 +163,17 @@
         [(uir-effect-decl? v)    'effect-decl]
         [(uir-effect-op? v)      'effect-op]
         [(uir-effect-handler? v) 'effect-handler]
+        [(uir-eff-system? v)      'eff-system]
+        [(uir-eff-capability? v)  'eff-capability]
+        [(uir-eff-capability-op? v) 'eff-capability-op]
+        [(uir-eff-ref? v)        'eff-ref]
+        [(uir-eff-given? v)      'eff-given]
+        [(uir-eff-handler? v)    'eff-handler]
+        [(uir-eff-component? v)  'eff-component]
+        [(uir-eff-state? v)      'eff-state]
+        [(uir-eff-action? v)     'eff-action]
+        [(uir-eff-invariant? v)  'eff-invariant]
+        [(uir-eff-policy? v)     'eff-policy]
         [else (error 'uir-tag "not a UIR node: ~e" v)]))
 
 ;; ── Serialization ──────────────────────────────────────────────────
@@ -175,8 +197,8 @@
                           ,(let ([rt (uir-fn-return-type v)]) (if rt (uir->sexp rt) #f))
                           ,(let ([e (uir-fn-effects v)]) (if e (uir->sexp e) #f)))]
         [(uir-typed-param? v) `(typed-param ,(uir->sexp (uir-typed-param-name v))
-                                           ,(uir->sexp (uir-typed-param-type v))
-                                           ,(uir->sexp (uir-typed-param-default v)))]
+                                            ,(let ([t (uir-typed-param-type v)]) (if t (uir->sexp t) #f))
+                                            ,(let ([d (uir-typed-param-default v)]) (if d (uir->sexp d) #f)))]
         [(uir-call? v) `(call ,(uir->sexp (uir-call-callee v))
                               ,(map uir->sexp (uir-call-args v)))]
         [(uir-let? v) `(let ,(uir->sexp (uir-let-name v))
@@ -301,9 +323,46 @@
                                         (map uir->sexp (cadr op))
                                         (uir->sexp (caddr op))))
                                 (uir-effect-handler-ops v))
-                          ,(let ([rc (uir-effect-handler-return-clause v)])
-                             (if rc (uir->sexp rc) #f))
-                          ,(uir->sexp (uir-effect-handler-body v)))]
+                           ,(let ([rc (uir-effect-handler-return-clause v)])
+                              (if rc (uir->sexp rc) #f))
+                           ,(uir->sexp (uir-effect-handler-body v)))]
+        [(uir-eff-system? v) `(eff-system ,(uir->sexp (uir-eff-system-name v))
+                                          ,(map uir->sexp (uir-eff-system-decls v)))]
+        [(uir-eff-capability? v) `(eff-capability ,(uir->sexp (uir-eff-capability-name v))
+                                                  ,(map uir->sexp (uir-eff-capability-type-params v))
+                                                  ,(map uir->sexp (uir-eff-capability-ops v)))]
+        [(uir-eff-capability-op? v) `(eff-capability-op ,(uir->sexp (uir-eff-capability-op-name v))
+                                                        ,(map uir->sexp (uir-eff-capability-op-params v))
+                                                        ,(let ([rt (uir-eff-capability-op-result-type v)])
+                                                           (if rt (uir->sexp rt) #f)))]
+        [(uir-eff-ref? v) `(eff-ref ,(uir->sexp (uir-eff-ref-name v))
+                                    ,(map uir->sexp (uir-eff-ref-type-args v)))]
+        [(uir-eff-given? v) `(eff-given ,(map uir->sexp (uir-eff-given-row v)))]
+        [(uir-eff-handler? v) `(eff-handler ,(uir->sexp (uir-eff-handler-effect v))
+                                            ,(map uir->sexp (uir-eff-handler-row v))
+                                            ,(map (lambda (op)
+                                                    (list (uir->sexp (car op))
+                                                          (map uir->sexp (cadr op))
+                                                          (let ([rt (caddr op)]) (if rt (uir->sexp rt) #f))
+                                                          (uir->sexp (cadddr op))))
+                                                  (uir-eff-handler-ops v)))]
+        [(uir-eff-component? v) `(eff-component ,(uir->sexp (uir-eff-component-name v))
+                                                ,(map uir->sexp (uir-eff-component-needs v))
+                                                ,(map uir->sexp (uir-eff-component-provides v))
+                                                ,(map (lambda (op)
+                                                        (list (uir->sexp (car op))
+                                                              (map uir->sexp (cadr op))
+                                                              (let ([rt (caddr op)]) (if rt (uir->sexp rt) #f))
+                                                              (uir->sexp (cadddr op))))
+                                                      (uir-eff-component-ops v)))]
+        [(uir-eff-state? v) `(eff-state ,(uir->sexp (uir-eff-state-name v))
+                                        ,(uir->sexp (uir-eff-state-type v))
+                                        ,(uir->sexp (uir-eff-state-init v)))]
+        [(uir-eff-action? v) `(eff-action ,(uir->sexp (uir-eff-action-name v))
+                                          ,(map uir->sexp (uir-eff-action-steps v)))]
+        [(uir-eff-invariant? v) `(eff-invariant ,(uir->sexp (uir-eff-invariant-expr v)))]
+        [(uir-eff-policy? v) `(eff-policy ,(uir-eff-policy-kind v)
+                                          ,(uir->sexp (uir-eff-policy-predicate v)))]
         [else (error 'uir->sexp "not a UIR node: ~e" v)]))
 
 (define (sexp->uir s)
@@ -322,7 +381,7 @@
                      es))]
     [`(symbol ,n) (uir-symbol n)]
     [`(fn ,name ,ps ,body ,rt ,efx) (uir-fn (if name (sexp->uir name) #f) (map sexp->uir ps) (sexp->uir body) (if rt (sexp->uir rt) #f) (if efx (sexp->uir efx) #f))]
-    [`(typed-param ,name ,type ,default) (uir-typed-param (sexp->uir name) (sexp->uir type) (sexp->uir default))]
+    [`(typed-param ,name ,type ,default) (uir-typed-param (sexp->uir name) (if (eq? type #f) #f (sexp->uir type)) (if (eq? default #f) #f (sexp->uir default)))]
     [`(call ,c ,as) (uir-call (sexp->uir c) (map sexp->uir as))]
     [`(let ,n ,v ,body) (uir-let (sexp->uir n) (sexp->uir v) (sexp->uir body))]
     [`(var ,n) (uir-var (sexp->uir n))]
@@ -418,9 +477,48 @@
                                   [`(,n ,ps ,b) (list (sexp->uir n) (map sexp->uir ps) (sexp->uir b))]
                                   [_ (error 'sexp->uir "invalid handler op: ~e" op)]))
                               ops)
-                         (if (eq? return-clause #f) #f (sexp->uir return-clause))
-                         (sexp->uir body))]
-     [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
+                          (if (eq? return-clause #f) #f (sexp->uir return-clause))
+                          (sexp->uir body))]
+    [`(eff-system ,name ,decls)
+     (uir-eff-system (sexp->uir name) (map sexp->uir decls))]
+    [`(eff-capability ,name ,type-params ,ops)
+     (uir-eff-capability (sexp->uir name) (map sexp->uir type-params) (map sexp->uir ops))]
+    [`(eff-capability-op ,name ,params ,result-type)
+     (uir-eff-capability-op (sexp->uir name) (map sexp->uir params)
+                            (if (eq? result-type #f) #f (sexp->uir result-type)))]
+    [`(eff-ref ,name ,type-args)
+     (uir-eff-ref (sexp->uir name) (map sexp->uir type-args))]
+    [`(eff-given ,row)
+     (uir-eff-given (map sexp->uir row))]
+    [`(eff-handler ,effect ,row ,ops)
+     (uir-eff-handler (sexp->uir effect) (map sexp->uir row)
+                      (map (lambda (op)
+                             (match op
+                               [`(,n ,ps ,rt ,b)
+                                (list (sexp->uir n) (map sexp->uir ps)
+                                      (if (eq? rt #f) #f (sexp->uir rt))
+                                      (sexp->uir b))]
+                               [_ (error 'sexp->uir "invalid eff op: ~e" op)]))
+                           ops))]
+    [`(eff-component ,name ,needs ,provides ,ops)
+     (uir-eff-component (sexp->uir name) (map sexp->uir needs) (map sexp->uir provides)
+                        (map (lambda (op)
+                               (match op
+                                 [`(,n ,ps ,rt ,b)
+                                  (list (sexp->uir n) (map sexp->uir ps)
+                                        (if (eq? rt #f) #f (sexp->uir rt))
+                                        (sexp->uir b))]
+                                 [_ (error 'sexp->uir "invalid eff op: ~e" op)]))
+                             ops))]
+    [`(eff-state ,name ,type ,init)
+     (uir-eff-state (sexp->uir name) (sexp->uir type) (sexp->uir init))]
+    [`(eff-action ,name ,steps)
+     (uir-eff-action (sexp->uir name) (map sexp->uir steps))]
+    [`(eff-invariant ,expr)
+     (uir-eff-invariant (sexp->uir expr))]
+    [`(eff-policy ,kind ,predicate)
+     (uir-eff-policy kind (sexp->uir predicate))]
+    [_ (error 'sexp->uir "invalid uir sexp: ~e" s)]))
 
 (require json)
 
@@ -436,7 +534,9 @@
                           'component 'element 'attribute 'event 'slot 'text-node 'style 'effect 'state 'jsx-expr 'spread
                           'effect-row 'effect-entry 'subtype 'effect-decl 'effect-op 'effect-handler
                           'match 'case 'pat-literal 'pat-capture 'pat-wildcard 'pat-value 'pat-or 'pat-as
-                          'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group))
+                          'pat-sequence 'pat-star 'pat-mapping 'pat-double-star 'pat-class 'pat-group
+                          'eff-system 'eff-capability 'eff-capability-op 'eff-ref 'eff-given 'eff-handler
+                          'eff-component 'eff-state 'eff-action 'eff-invariant 'eff-policy))
 
 (define (uir-jsexpr->sexp j)
   (match j

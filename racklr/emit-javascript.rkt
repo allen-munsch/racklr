@@ -40,10 +40,11 @@
 ;; Wrap a directly-performed effect call in the runtime guard: the ambient
 ;; effect context (established by __withEffects) enforces must-not / ops /
 ;; budget against the specific operation, then runs the original call.
-(define (emit-perform name op call-str)
-  (format "__perform(~s, ~s, function() { return ~a; })"
+(define (emit-perform name op args-str call-str)
+  (format "__perform(~s, ~s, [~a], function() { return ~a; })"
           (symbol->string name)
           (if op (symbol->string op) "")
+          args-str
           call-str))
 
 (define (emit-js uir)
@@ -327,14 +328,14 @@
                     (emit-js (first args))
                     op-name
                     (emit-js (second args)))]
-           [else
-            (define fn-str (emit-js callee))
-            (define args-str (string-join (map emit-js args) ", "))
-            (define call-str (format "~a(~a)" fn-str args-str))
-            (define eff (direct-effect-of-callee callee))
-            (if eff
-                (emit-perform eff (effect-op-of-callee callee) call-str)
-                call-str)])]
+            [else
+             (define fn-str (emit-js callee))
+             (define args-str (string-join (map emit-js args) ", "))
+             (define call-str (format "~a(~a)" fn-str args-str))
+             (define eff (direct-effect-of-callee callee))
+             (if eff
+                 (emit-perform eff (effect-op-of-callee callee) args-str call-str)
+                 call-str)])]
     
     [(uir-if test conseq altern)
      (if (or (uir-block? conseq) (uir-block? altern))
@@ -395,10 +396,12 @@
                         (let ([op (uir-symbol-name (uir-call-callee (uir-set!-value node)))])
                           (or (string=? op "async-fn") (string=? op "gen-fn"))))))
           (emit-js node)]
-        [(uir-if? node)
-         ;; Always emit a uir-if in statement position as an if-statement, never
-         ;; a ternary. A ternary with a call in the consequent (`a ? b() : c`)
-         ;; does not re-parse in the JS grammar.
+        [(and (uir-if? node)
+              (or (uir-block? (uir-if-then node))
+                  (uir-block? (uir-if-else node))))
+         ;; A real if-statement has block branches; a ternary used as an
+         ;; expression statement (`x ? 1 : 2;`) has expression branches and is
+         ;; left to fall through to the generic emit-js ternary path below.
          (format "if (~a) { ~a } else { ~a }"
                  (emit-js (uir-if-test node))
                  (emit-statement (uir-if-then node))
@@ -611,10 +614,18 @@
 (define (effects-guard-preamble)
   (string-append
    "var __effects_stack = [];\n"
+   "var __handlers_stack = [];\n"
    "function __effects_current() {\n"
    "  return __effects_stack.length ? __effects_stack[__effects_stack.length - 1] : null;\n"
    "}\n"
-   "function __perform(name, op, thunk) {\n"
+   "function __current_handler(name) {\n"
+   "  for (var _i = __handlers_stack.length - 1; _i >= 0; _i--) {\n"
+   "    var _f = __handlers_stack[_i];\n"
+   "    if (_f.name === name) return _f.handler;\n"
+   "  }\n"
+   "  return null;\n"
+   "}\n"
+   "function __perform_checked(name, op, thunk) {\n"
    "  var _ctx = __effects_current();\n"
    "  if (_ctx) {\n"
    "    var _e = _ctx.row[name];\n"
@@ -637,6 +648,22 @@
    "    _perf[name][op] = (_perf[name][op] || 0) + 1;\n"
    "  }\n"
    "  return thunk();\n"
+   "}\n"
+   "function __perform(name, op, args, thunk) {\n"
+   "  var _handler = __current_handler(name);\n"
+   "  if (_handler) {\n"
+   "    var _resume = function() { return __perform_checked(name, op, thunk); };\n"
+   "    return _handler(op, args, _resume);\n"
+   "  }\n"
+   "  return __perform_checked(name, op, thunk);\n"
+   "}\n"
+   "function __handle(name, handler, fn) {\n"
+   "  __handlers_stack.push({ name: name, handler: handler });\n"
+   "  try {\n"
+   "    return fn();\n"
+   "  } finally {\n"
+   "    __handlers_stack.pop();\n"
+   "  }\n"
    "}\n"
    "function __withEffects(row, fn) {\n"
    "  var _valid = [\"may\", \"must\", \"must-not\"];\n"
@@ -690,11 +717,22 @@
    "  return wrapped;\n"
    "}"))
 
+;; A call to the runtime handler installer `__handle(name, handler, fn)`: it
+;; needs the preamble even when no direct effect call is visible in the program.
+(define (handler-call? n)
+  (and (uir-call? n)
+       (let ([c (uir-call-callee n)])
+         (cond
+           [(uir-symbol? c) (string=? (uir-symbol-name c) "__handle")]
+           [(uir-var? c) (string=? (uir-symbol-name (uir-var-name c)) "__handle")]
+           [else #f]))))
+
 (define (program-has-effects? uir)
   (cond
     [(uir-effect-row? uir) #t]
     [(struct? uir)
-     (or (and (uir-call? uir)
+     (or (handler-call? uir)
+         (and (uir-call? uir)
               (direct-effect-of-callee (uir-call-callee uir)))
          (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])

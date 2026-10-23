@@ -612,6 +612,7 @@
 ;; (breaks the statement↔expression cycle; see expr.rkt).
 (fn-body-lowerer lower-fn-body)
 (yield-stmt-lowerer lower-yield-stmt)
+(fn-decl-lowerer lower-fn-decl)
 
 (module+ main
   (displayln "lower-javascript loaded."))

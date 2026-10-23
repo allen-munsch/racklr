@@ -1,0 +1,6 @@
+[submodule "effervesce"]
+	path = effervesce
+	url = ./effervesce/
+[submodule "django"]
+	path = django
+	url = https://github.com/django/django.git

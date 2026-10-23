@@ -118,7 +118,7 @@
               "preamble emitted for a const-bound arrow")
   (check-true (string-contains? out "const f = __withEffects(")
               "const-bound arrow wrapped through the guard")
-  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", [\"hi\"], function() { return llm.query(\"hi\"); })")
               "arrow body is instrumented inside the guard"))
 
 (define (test-let-arrow-emits-guard)
@@ -160,7 +160,7 @@
               "row name emitted")
   (check-true (string-contains? out "\"max\": 5")
               "budget emitted")
-  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+  (check-true (string-contains? out "() => __perform(\"llm\", \"query\", [\"hi\"], function() { return llm.query(\"hi\"); })")
               "wrapped arrow body is instrumented"))
 
 (define (test-bare-withEffects-emits-guard)
@@ -181,7 +181,7 @@
                                                      (list (uir-string "hi")))))
                                     #f #f))))
   (define out (emit-javascript p))
-  (check-true (string-contains? out "__perform(\"llm\", \"query\", function() { return llm.query(\"hi\"); })")
+  (check-true (string-contains? out "__perform(\"llm\", \"query\", [\"hi\"], function() { return llm.query(\"hi\"); })")
               "direct llm.query call is instrumented"))
 
 (define (test-preamble-defines-perform)

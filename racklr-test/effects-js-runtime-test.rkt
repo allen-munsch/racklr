@@ -204,6 +204,71 @@
                           (list (await-promise)))
    "effect obligation unmet: llm"))
 
+;; ── effect handlers ──────────────────────────────────────────────────
+
+;; Program: const f = () => llm.query("hi"); (inference guards f and the body
+;; is instrumented with __perform, so a caller-installed handler intercepts it).
+(define (performing-program)
+  (decl (var-decl "const"
+                  (uir-set! (sym "f")
+                            (arrow (uir-call (jsdot (v "llm") "query")
+                                             (list (uir-string "hi"))))))))
+
+(define (run-handler handler-expr #:llm-impl [llm-impl "return \"real\";"])
+  (define js
+    (string-append
+     (emit-javascript (performing-program))
+     "\n"
+     (format "globalThis.llm = { query: function(){ ~a } };\n" llm-impl)
+     "try {\n"
+     "  var _r = __handle(\"llm\", " handler-expr ", function() { return f(); });\n"
+     "  console.log(\"RESULT:\" + _r);\n"
+     "} catch (e) { console.log(\"THREW:\" + e.message); }\n"))
+  (run-node js))
+
+(define (check-handler-result handler-expr expected #:llm-impl [llm-impl "return \"real\";"])
+  (define-values (ok? out) (run-handler handler-expr #:llm-impl llm-impl))
+  (check-true ok? (format "node exited nonzero: ~a" out))
+  (check-true (string-contains? out (format "RESULT:~a" expected))
+              (format "expected RESULT:~a, got: ~a" expected out)))
+
+(define (test-handler-supplies-value)
+  ;; The handler short-circuits: llm.query is never invoked (the stub throws if
+  ;; it is), so the caller-supplied value is returned instead of the effect.
+  (check-handler-result
+   "function(op, args, resume) { return \"mocked:\" + op; }"
+   "mocked:query"
+   #:llm-impl "throw new Error(\"real llm called\");"))
+
+(define (test-handler-resume)
+  ;; A handler may resume to the real (row-checked) effect.
+  (check-handler-result
+   "function(op, args, resume) { return \"wrapped:\" + resume(); }"
+   "wrapped:real"))
+
+(define (test-handler-receives-args)
+  (check-handler-result
+   "function(op, args, resume) { return args[0]; }"
+   "hi"
+   #:llm-impl "throw new Error(\"real llm called\");"))
+
+(define (test-handler-innermost-wins)
+  (define js
+    (string-append
+     (emit-javascript (performing-program))
+     "\n"
+     "globalThis.llm = { query: function(){ throw new Error(\"real llm called\"); } };\n"
+     "try {\n"
+     "  var _r = __handle(\"llm\", function(op, args, resume) { return \"outer\"; }, function() {\n"
+     "    return __handle(\"llm\", function(op, args, resume) { return \"inner\"; }, function() { return f(); });\n"
+     "  });\n"
+     "  console.log(\"RESULT:\" + _r);\n"
+     "} catch (e) { console.log(\"THREW:\" + e.message); }\n"))
+  (define-values (ok? out) (run-node js))
+  (check-true ok? (format "node exited nonzero: ~a" out))
+  (check-true (string-contains? out "RESULT:inner")
+              (format "expected RESULT:inner, got: ~a" out)))
+
 (module+ main
   (test-budget-exceeded)
   (test-must-not-prohibited)
@@ -220,4 +285,8 @@
   (test-async-budget-after-await)
   (test-async-must-met)
   (test-async-must-unmet)
+  (test-handler-supplies-value)
+  (test-handler-resume)
+  (test-handler-receives-args)
+  (test-handler-innermost-wins)
   (displayln "All JS effect-runtime enforcement tests passed."))

@@ -22,7 +22,8 @@
 (provide
   with-effects-call?
   extract-with-effects-row
-  extract-with-effects-fn)
+  extract-with-effects-fn
+  record->effect-row)
 
 ;; Name of a callee expression (uir-var or uir-symbol) as a symbol.
 (define (callee-symbol c)

@@ -331,7 +331,9 @@
   (define else-block (if (>= (length kids) 4) (fourth kids) #f))
   ;; Extract loop variable name from exprlist
   (define var-toks (if exprlist (cst-tokens-deep exprlist tk-type tk-value) '()))
-  (define var-name (for/or ([t var-toks] #:when (eq? (first t) 'NAME)) (second t)))
+  (define var-name (for/or ([t var-toks]
+                            #:when (member (first t) '(NAME UNDERSCORE MATCH CASE)))
+                    (second t)))
   ;; Lower iterable expression
   (define iterable (if testlist (lower-expr testlist tk-type tk-value) (uir-symbol "?iter")))
   ;; Lower body
@@ -591,29 +593,49 @@
 ;; ── With statement ─────────────────────────────────────────────────
 
 (define (lower-with cst tk-type tk-value)
-  ;; with_stmt: [with_item*, block]
-  ;; All children except the last block are with_items
-  (define kids (node-children cst))
-  (define block-node (findf (lambda (k) (eq? (any-tree-tag k) 'block)) kids))
+  ;; with_stmt : 'with' with_item (',' with_item)* ':' block
+  ;;           | 'with' '(' with_item (',' with_item)* ','? ')' ':' block
+  ;; The generated parser emits the first with_item directly and collects the
+  ;; (',' with_item)* repetition into a LIST of group(COMMA, with_item) nodes,
+  ;; so a plain node-children filter drops every item after the first. The
+  ;; parenthesized alternative's '(' / ')' are literal tokens that the token
+  ;; filter skips, so both alternatives lower identically.
+  (define block-node (findf (lambda (k) (eq? (any-tree-tag k) 'block)) (node-children cst)))
   (define body (if block-node (lower-block-or-stmt block-node tk-type tk-value) (uir-null)))
-  ;; Extract with_items (all CST nodes that aren't the block)
-  (define item-nodes (filter (lambda (k) (and (cst-node? k) (not (eq? (any-tree-tag k) 'block)))) kids))
-  (define items
-    (for/list ([item item-nodes])
-      (define ikids (node-children item))
-      ;; with_item: [test, (group for as)]
-      (define ctx-expr (if (>= (length ikids) 1)
-                           (lower-expr (first ikids) tk-type tk-value)
-                           (uir-null)))
-      (define as-name
-        (if (>= (length ikids) 2)
-            (let* ([as-group (second ikids)]
-                   [akids (node-children as-group)]
-                   [as-expr (if (>= (length akids) 1) (first akids) #f)])
-              (if as-expr (lower-expr as-expr tk-type tk-value) #f))
-            #f))
-      (list ctx-expr as-name)))
-  (uir-with items body))
+  (define (lower-item item)
+    (define ikids (node-children item))
+    ;; with_item: [test, (group for as)]
+    (define ctx-expr (if (>= (length ikids) 1)
+                         (lower-expr (first ikids) tk-type tk-value)
+                         (uir-null)))
+    (define as-name
+      (if (>= (length ikids) 2)
+          (let* ([as-group (second ikids)]
+                 [akids (node-children as-group)]
+                 [as-expr (if (>= (length akids) 1) (first akids) #f)])
+            (if as-expr (lower-expr as-expr tk-type tk-value) #f))
+          #f))
+    (list ctx-expr as-name))
+  (define items '())
+  (let loop ([remaining (any-tree-children cst)])
+    (cond
+      [(null? remaining) (void)]
+      [(and (list? (car remaining)) (pair? (car remaining)))
+       (loop (append (car remaining) (cdr remaining)))]
+      [(cst-node? (car remaining))
+       (define t (any-tree-tag (car remaining)))
+       (cond
+         [(eq? t 'with_item)
+          (set! items (cons (lower-item (car remaining)) items))]
+         [(eq? t 'group)
+          ;; comma wrapper group(COMMA, with_item): lower its with_item child
+          (define inner
+            (for/or ([k (any-tree-children (car remaining))])
+              (and (cst-node? k) (eq? (any-tree-tag k) 'with_item) k)))
+          (when inner (set! items (cons (lower-item inner) items)))])
+       (loop (cdr remaining))]
+      [else (loop (cdr remaining))]))
+  (uir-with (reverse items) body))
 
 (define (lower-funcdef cst tk-type tk-value)
   (define toks (cst-tokens-deep cst tk-type tk-value))
@@ -649,49 +671,42 @@
 
 (define (lower-parameters cst tk-type tk-value)
   ;; parameters: '(' typedargslist? ')'
-  ;; typedargslist: tfpdef (',' tfpdef ('=' test)?)* ','?
-  ;; Default values appear as siblings of tfpdef in comma-separated groups
+  ;; Each parameter is a tfpdef node; its default value is a sibling
+  ;; (group ASSIGN test) that FOLLOWS the tfpdef in a pre-order walk. Attach
+  ;; a default group to the most recently collected parameter.
   (define result '())
-  (define pending-default #f)  ;; default waiting for next tfpdef
+  (define (attach-default! d)
+    (when (pair? result)
+      (set! result
+            (cons (uir-typed-param (uir-typed-param-name (car result))
+                                   (uir-typed-param-type (car result))
+                                   d)
+                  (cdr result)))))
+  (define (default-test node)
+    ;; node is a (group ASSIGN test) default: return the lowered test or #f.
+    (and (cst-node? node)
+         (eq? (any-tree-tag node) 'group)
+         (let ([gk (node-children node)])
+           (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
+                (for/or ([rc (any-tree-children node)])
+                  (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
+                       (with-handlers ([exn:fail? (lambda (_) #f)])
+                         (eq? (tk-type rc) 'ASSIGN))))
+                (lower-expr (first gk) tk-type tk-value)))))
   (let walk ([node cst])
-    (cond [(cst-node? node)
-           (cond [(eq? (any-tree-tag node) 'tfpdef)
-                  (define param (lower-tfpdef node tk-type tk-value))
-                  (when pending-default
-                    (set! param (uir-typed-param (uir-typed-param-name param)
-                                                 (uir-typed-param-type param)
-                                                 pending-default))
-                    (set! pending-default #f))
-                  (set! result (cons param result))]
-                 [else
-                  ;; Check for default group (sibling of tfpdef): group with ASSIGN+test
-                  (define raw-kids (any-tree-children node))
-                  (for ([c raw-kids])
-                    (cond [(cst-node? c) (walk c)]
-                          [(and (list? c) (pair? c)) (for-each walk c)]
-                          [else (void)]))
-                  ;; Also check if THIS node is a default group
-                  (when (and (eq? (any-tree-tag node) 'group)
-                             (pair? result))
-                    (define gk (node-children node))
-                    (when (and (pair? gk) (eq? (any-tree-tag (first gk)) 'test)
-                               (for/or ([rc (any-tree-children node)])
-                                 (and (not (cst-node? rc)) (not (null? rc)) (not (eq? rc 'none))
-                                      (with-handlers ([exn:fail? (lambda (_) #f)])
-                                        (eq? (tk-type rc) 'ASSIGN)))))
-                      (set! pending-default (lower-expr (first gk) tk-type tk-value))))])]
-          [(and (list? node) (pair? node)) (for-each walk node)]
-          [else (void)]))
-  ;; After walk, apply any pending default to the last param
-  (define final-result
-    (if pending-default
-        (let ([last (car result)])
-          (cons (uir-typed-param (uir-typed-param-name last)
-                                 (uir-typed-param-type last)
-                                 pending-default)
-                (cdr result)))
-        result))
-  (reverse final-result))
+    (cond
+      [(cst-node? node)
+       (cond
+         [(eq? (any-tree-tag node) 'tfpdef)
+          (set! result (cons (lower-tfpdef node tk-type tk-value) result))]
+         [else
+          (define d (default-test node))
+          (if d
+              (attach-default! d)
+              (for ([c (any-tree-children node)]) (walk c)))])]
+      [(and (list? node) (pair? node)) (for-each walk node)]
+      [else (void)]))
+  (reverse result))
 
 (define (lower-tfpdef cst tk-type tk-value)
   ;; tfpdef: name (':' test)? ('=' test)?
@@ -745,11 +760,9 @@
                                 (with-handlers ([exn:fail? (lambda (_) #f)])
                                   (eq? (tk-type rc) 'ASSIGN))))
                          (lower-expr (first gk) tk-type tk-value))))))))
-  (if (or type-expr (or default-expr default-from-list))
-      (uir-typed-param (uir-symbol (or name "?"))
-                       (or type-expr #f)
-                       (or default-expr default-from-list #f))
-      (uir-symbol (or name "?"))))
+  (uir-typed-param (uir-symbol (or name "?"))
+                   (or type-expr #f)
+                   (or default-expr default-from-list #f)))
 
 ;; Lower lambdef into uir-fn (anonymous function)
 (define (lower-suite cst tk-type tk-value)
@@ -767,23 +780,44 @@
   (define kids (node-children cst))
   (define suite-node (or (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids)
                          (findf (λ (k) (eq? (any-tree-tag k) 'block)) kids)))
-  ;; Extract superclass from arglist: group node with '(' arglist? ')'
+  ;; Extract the first positional base from the '(' arglist? ')' group: walk the
+  ;; arglist arguments and take the first whose leading child is a `test` (a
+  ;; positional base), skipping keyword / * / ** bases (e.g. metaclass=...).
+   ;; A positional base lowers from either a `test` node or (after the walrus
+   ;; rewiring of `argument : namedexpr_test ...`) a `namedexpr_test` node; both
+   ;; are non-keyword, non-star bases and must be accepted.
+   (define (positional-base? n) (member (any-tree-tag n) '(test namedexpr_test)))
+   (define (find-super-node arglist)
+     (let loop ([remaining (any-tree-children arglist)])
+       (cond
+         [(null? remaining) #f]
+         [(and (list? (car remaining)) (pair? (car remaining)))
+          (or (loop (car remaining)) (loop (cdr remaining)))]
+         [(cst-node? (car remaining))
+          (define t (any-tree-tag (car remaining)))
+          (cond
+            [(eq? t 'argument)
+             (define aks (node-children (car remaining)))
+             (if (and (pair? aks) (positional-base? (first aks)))
+                 (first aks)
+                 (loop (cdr remaining)))]
+            [(eq? t 'group)
+             (define arg (for/or ([c (any-tree-children (car remaining))])
+                           (and (cst-node? c) (eq? (any-tree-tag c) 'argument) c)))
+             (if arg
+                 (let ([aks (node-children arg)])
+                   (if (and (pair? aks) (positional-base? (first aks)))
+                       (first aks)
+                       (loop (cdr remaining))))
+                 (loop (cdr remaining)))]
+            [else (loop (cdr remaining))])]
+         [else (loop (cdr remaining))])))
   (define super-node
     (for/or ([k kids])
       (and (eq? (any-tree-tag k) 'group)
            (let ([gk (node-children k)])
              (and (pair? gk) (eq? (any-tree-tag (first gk)) 'arglist)
-                  ;; Get first test from arglist → argument → test
-                  (let* ([al (first gk)]
-                         [al-kids (node-children al)])
-                    (and (pair? al-kids)
-                         (let ([arg (first al-kids)])
-                           (and (eq? (any-tree-tag arg) 'argument)
-                                (let ([arg-kids (node-children arg)])
-                                  (and (pair? arg-kids)
-                                       (let ([test-node (first arg-kids)])
-                                         (eq? (any-tree-tag test-node) 'test)
-                                         test-node))))))))))))
+                  (find-super-node (first gk)))))))
   (define super (if super-node (lower-expr super-node tk-type tk-value) (uir-null)))
   ;; Walk the suite/block to extract fields (assignments) and methods (funcdef)
   (define fields '())
@@ -813,29 +847,35 @@
                             (define fname
                               (let ([lhs-toks (cst-tokens-deep lhs tk-type tk-value)])
                                 (for/or ([t lhs-toks] #:when (eq? (first t) 'NAME)) (second t))))
-                            (cond [(and (cst-node? rhs) (eq? (any-tree-tag rhs) 'group)
-                                        (let ([rgk (node-children rhs)])
-                                          (and (pair? rgk)
-                                               (eq? (any-tree-tag (first rgk)) 'annassign))))
-                                   ;; Annotated field: x: int = 5
-                                   (let* ([ann (first (node-children rhs))]
-                                          [ann-kids (node-children ann)]
-                                          [type-node (and (pair? ann-kids) (first ann-kids))]
-                                          [type-expr (if type-node (lower-expr type-node tk-type tk-value) (uir-null))]
-                                          [init-node (and (>= (length ann-kids) 2)
-                                                          (let ([ig (second ann-kids)])
-                                                            (and (cst-node? ig)
-                                                                 (let ([igk (node-children ig)])
-                                                                   (and (pair? igk) (first igk))))))]
-                                          [init (if init-node (lower-expr init-node tk-type tk-value) (uir-null))])
-                                      (set! fields (cons (uir-field (uir-symbol (or fname "?")) type-expr init) fields)))]
-                                   [else
-                                    ;; Plain field: x = 1
-                                    (define rhs-value (find-rhs-in-children (list rhs)))
-                                    (set! fields (cons (uir-field (uir-symbol (or fname "?")) (uir-null)
-                                                                  (if rhs-value
-                                                                      (lower-expr rhs-value tk-type tk-value)
-                                                                      (uir-null))) fields))]))]
+                            (when fname
+                              ;; A bare string-literal statement (class docstring) has no
+                              ;; NAME on its LHS — skip it instead of emitting a "?" field.
+                              (cond [(and (cst-node? rhs) (eq? (any-tree-tag rhs) 'group)
+                                          (let ([rgk (node-children rhs)])
+                                            (and (pair? rgk)
+                                                 (eq? (any-tree-tag (first rgk)) 'annassign))))
+                                     ;; Annotated field: x: int = 5
+                                     (let* ([ann (first (node-children rhs))]
+                                            [ann-kids (node-children ann)]
+                                            [type-node (and (pair? ann-kids) (first ann-kids))]
+                                            [type-expr (if type-node (lower-expr type-node tk-type tk-value) (uir-null))]
+                                            [init-node (and (>= (length ann-kids) 2)
+                                                            (let ([ig (second ann-kids)])
+                                                              (and (cst-node? ig)
+                                                                   (let ([igk (node-children ig)])
+                                                                     (and (pair? igk) (first igk))))))]
+                                            [init (if init-node (lower-expr init-node tk-type tk-value) (uir-null))])
+                                        (set! fields (cons (uir-field (uir-symbol fname) type-expr init) fields)))]
+                                     [else
+                                      ;; Plain field: x = 1
+                                      (define rhs-value (find-rhs-in-children (list rhs)))
+                                      (set! fields
+                                            (cons (uir-field (uir-symbol fname)
+                                                             (uir-null)
+                                                             (if rhs-value
+                                                                 (lower-expr rhs-value tk-type tk-value)
+                                                                 (uir-null)))
+                                                  fields))])))]
                          ['pass_stmt (void)]
                          [_ (void)])))))))]
           [(eq? tag 'compound_stmt)

@@ -58,7 +58,20 @@
 
 (let ([tks (py-tokenize "3.14\n")])
   (check-equal? (length tks) 3)
-  (check-equal? (tok-type (first tks)) 'FLOAT_NUMBER))
+  (check-equal? (tok-type (first tks)) 'NUMBER)
+  (check-equal? (tok-value (first tks)) "3.14"))
+
+;; Float exponents must lex as a single NUMBER. EXPONENT_FLOAT combines
+;; POINT_FLOAT with EXPONENT; a first-match malt stopped at the "1.5" prefix.
+(let ([tks (py-tokenize "1.5e10\n")])
+  (check-equal? (length tks) 3)
+  (check-equal? (tok-type (first tks)) 'NUMBER)
+  (check-equal? (tok-value (first tks)) "1.5e10"))
+
+(let ([tks (py-tokenize "2.5e-3\n")])
+  (check-equal? (length tks) 3)
+  (check-equal? (tok-type (first tks)) 'NUMBER)
+  (check-equal? (tok-value (first tks)) "2.5e-3"))
 
 ;; Names
 (let ([tks (py-tokenize "foo\n")])
@@ -76,6 +89,18 @@
 (let ([tks (py-tokenize "\"the quick brown fox\"\n")])
   (check-equal? (length tks) 3 "f-containing string should be one STRING token")
   (check-equal? (tok-type (first tks)) 'STRING))
+
+;; Two-char prefixes rf / br must lex as one STRING: the optional-prefix
+;; alternatives [rR] and [rR][fF] both have to be explored.
+(let ([tks (py-tokenize "rf\"raw f\"\n")])
+  (check-equal? (length tks) 3 "rf prefix should be one STRING token")
+  (check-equal? (tok-type (first tks)) 'STRING)
+  (check-equal? (tok-value (first tks)) "rf\"raw f\""))
+
+(let ([tks (py-tokenize "br'bytes'\n")])
+  (check-equal? (length tks) 3 "br prefix should be one STRING token")
+  (check-equal? (tok-type (first tks)) 'STRING)
+  (check-equal? (tok-value (first tks)) "br'bytes'"))
 
 ;; Operators
 (let ([tks (py-tokenize "=\n")])

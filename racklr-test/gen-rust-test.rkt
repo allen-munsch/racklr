@@ -84,7 +84,7 @@
 
 (let ([tks (rs-tokenize "0xff")])
   (check-equal? (length tks) 2)
-  (check-equal? (tok-type (first tks)) 'HEX_LITERAL)
+  (check-equal? (tok-type (first tks)) 'INTEGER_LITERAL)
   (check-equal? (tok-value (first tks)) "0xff"))
 
 ;; Floats

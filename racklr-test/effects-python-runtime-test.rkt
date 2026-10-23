@@ -220,6 +220,73 @@
     (fn "f" (llm-op "query") #:effects (extract-effects-row deco)))
   (check-runs (prog (uir-decorated (list deco) inner))))
 
+;; ── effect handlers ──────────────────────────────────────────────────
+
+;; Program: def f(): return llm.query("hi") — inference guards f and the body
+;; is instrumented with __perform, so a caller-installed handler intercepts it.
+(define (performing-program)
+  (prog (fn "f" (uir-return (uir-call (pydot (v "llm") "query") (list (str "hi")))))))
+
+(define (run-handler handler-expr #:llm-impl [llm-impl "return \"real\""])
+  (define py
+    (string-append
+     (emit-python (performing-program))
+     "\n"
+     "class _LLM:\n"
+     (format "    def query(self, *a): ~a\n" llm-impl)
+     "llm = _LLM()\n"
+     "try:\n"
+     "    _r = __handle(\"llm\", " handler-expr ", f)\n"
+     "    print(\"RESULT:\" + str(_r))\n"
+     "except Exception as e:\n"
+     "    print(\"THREW:\" + str(e))\n"))
+  (run-python py))
+
+(define (check-handler-result handler-expr expected #:llm-impl [llm-impl "return \"real\""])
+  (define-values (ok? out) (run-handler handler-expr #:llm-impl llm-impl))
+  (check-true ok? (format "python3 exited nonzero: ~a" out))
+  (check-true (string-contains? out (format "RESULT:~a" expected))
+              (format "expected RESULT:~a, got: ~a" expected out)))
+
+(define (test-handler-supplies-value)
+  ;; The handler short-circuits: llm.query is never invoked (the stub raises if
+  ;; it is), so the caller-supplied value is returned instead of the effect.
+  (check-handler-result
+   "lambda op, args, resume: \"mocked:\" + op"
+   "mocked:query"
+   #:llm-impl "raise RuntimeError(\"real llm called\")"))
+
+(define (test-handler-resume)
+  ;; A handler may resume to the real (row-checked) effect.
+  (check-handler-result
+   "lambda op, args, resume: \"wrapped:\" + resume()"
+   "wrapped:real"))
+
+(define (test-handler-receives-args)
+  (check-handler-result
+   "lambda op, args, resume: args[0]"
+   "hi"
+   #:llm-impl "raise RuntimeError(\"real llm called\")"))
+
+(define (test-handler-innermost-wins)
+  (define py
+    (string-append
+     (emit-python (performing-program))
+     "\n"
+     "class _LLM:\n"
+     "    def query(self, *a): raise RuntimeError(\"real llm called\")\n"
+     "llm = _LLM()\n"
+     "try:\n"
+     "    _r = __handle(\"llm\", lambda op, args, resume: \"outer\",\n"
+     "                  lambda: __handle(\"llm\", lambda op, args, resume: \"inner\", f))\n"
+     "    print(\"RESULT:\" + str(_r))\n"
+     "except Exception as e:\n"
+     "    print(\"THREW:\" + str(e))\n"))
+  (define-values (ok? out) (run-python py))
+  (check-true ok? (format "python3 exited nonzero: ~a" out))
+  (check-true (string-contains? out "RESULT:inner")
+              (format "expected RESULT:inner, got: ~a" out)))
+
 (module+ main
   (test-budget-exceeded)
   (test-must-not-prohibited)
@@ -237,4 +304,8 @@
   (test-async-must-unmet)
   (test-async-budget-exceeded)
   (test-effects-decorator-not-reemitted)
+  (test-handler-supplies-value)
+  (test-handler-resume)
+  (test-handler-receives-args)
+  (test-handler-innermost-wins)
   (displayln "All Python effect-runtime enforcement tests passed."))

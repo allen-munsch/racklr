@@ -11,9 +11,12 @@
          lower-open-sequence flatten-sequence-patterns)
 
 (define (lower-patterns cst tk-type tk-value)
-  (define tag (any-tree-tag cst))
-  (if (eq? tag 'open_sequence_pattern)
-      (lower-open-sequence cst tk-type tk-value)
+  ;; cst is a `patterns` node: patterns: open_sequence_pattern | pattern.
+  ;; Dispatch on the FIRST CHILD's tag — the node itself is always `patterns`,
+  ;; so checking the node tag here never matched open_sequence_pattern.
+  (define kids (node-children cst))
+  (if (and (pair? kids) (eq? (any-tree-tag (first kids)) 'open_sequence_pattern))
+      (lower-open-sequence (first kids) tk-type tk-value)
       (lower-pattern cst tk-type tk-value)))
 
 (define (lower-pattern cst tk-type tk-value)

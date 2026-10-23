@@ -80,7 +80,19 @@
   uir-effect-decl uir-effect-decl? uir-effect-decl-name uir-effect-decl-ops
   uir-effect-op uir-effect-op? uir-effect-op-name uir-effect-op-params uir-effect-op-result-type
   uir-effect-handler uir-effect-handler? uir-effect-handler-effect uir-effect-handler-ops
-  uir-effect-handler-return-clause uir-effect-handler-body)
+  uir-effect-handler-return-clause uir-effect-handler-body
+  ;; Effervesce (declarative, check-only system descriptions)
+  uir-eff-system uir-eff-system? uir-eff-system-name uir-eff-system-decls
+  uir-eff-capability uir-eff-capability? uir-eff-capability-name uir-eff-capability-type-params uir-eff-capability-ops
+  uir-eff-capability-op uir-eff-capability-op? uir-eff-capability-op-name uir-eff-capability-op-params uir-eff-capability-op-result-type
+  uir-eff-ref uir-eff-ref? uir-eff-ref-name uir-eff-ref-type-args
+  uir-eff-given uir-eff-given? uir-eff-given-row
+  uir-eff-handler uir-eff-handler? uir-eff-handler-effect uir-eff-handler-row uir-eff-handler-ops
+  uir-eff-component uir-eff-component? uir-eff-component-name uir-eff-component-needs uir-eff-component-provides uir-eff-component-ops
+  uir-eff-state uir-eff-state? uir-eff-state-name uir-eff-state-type uir-eff-state-init
+  uir-eff-action uir-eff-action? uir-eff-action-name uir-eff-action-steps
+  uir-eff-invariant uir-eff-invariant? uir-eff-invariant-expr
+  uir-eff-policy uir-eff-policy? uir-eff-policy-kind uir-eff-policy-predicate)
 
 ;; ── Tier 0: Core Computational IR ──────────────────────────────────
 
@@ -253,3 +265,55 @@
 ;; triples — one per operation clause. return-clause: #f or uir (the
 ;; `return(x)` clause body). body: uir (the computation being handled).
 (struct uir-effect-handler (effect ops return-clause body) #:transparent)
+
+;; ── Effervesce (declarative, check-only system descriptions) ────────
+;;
+;; Effervesce is a check-only language for describing a system as typed
+;; capabilities and rules. Unlike Koka's executable handlers, these nodes are
+;; declarative: a capability is a named effect, `given` is a terminal
+;; capability, `via` is an interpretation edge, and the checker (not built
+;; here) walks that graph. The `uir-eff-` prefix avoids collision with the
+;; React `uir-component`/`uir-state` and the Koka `uir-effect-*` nodes.
+
+;; `system Name { ... }`. decls: (listof uir?) — one node per top-level decl.
+(struct uir-eff-system (name decls) #:transparent)
+
+;; `capability Read<A> { ... }`. name: uir-symbol. type-params: (listof
+;; uir-symbol) (bare parameter names). ops: (listof uir-eff-capability-op).
+(struct uir-eff-capability (name type-params ops) #:transparent)
+
+;; An operation declared inside a `capability` block: `get() -> A`.
+;; name: uir-symbol. params: (listof uir-typed-param). result-type: uir-symbol
+;; or #f (the `-> type` is optional in the surface).
+(struct uir-eff-capability-op (name params result-type) #:transparent)
+
+;; A reference to a capability: `Read<Config>` or `Fs`.
+;; name: uir-symbol. type-args: (listof uir-symbol), empty for a bare ref.
+(struct uir-eff-ref (name type-args) #:transparent)
+
+;; `given Fs, Log`. row: (listof uir-eff-ref).
+(struct uir-eff-given (row) #:transparent)
+
+;; `E via R { ... }`. effect: uir-eff-ref. row: (listof uir-eff-ref) (may be
+;; empty). ops: (listof (list name params result-type body)) — one quad per
+;; operation clause, where params is (listof uir-typed-param) and result-type
+;; is uir-symbol or #f.
+(struct uir-eff-handler (effect row ops) #:transparent)
+
+;; `component C needs R provides P { ... }`. name: uir-symbol.
+;; needs: (listof uir-eff-ref). provides: (listof uir-eff-ref), the capabilities
+;; this component offers to concurrent peers. ops: same quad shape as handler.
+(struct uir-eff-component (name needs provides ops) #:transparent)
+
+;; `state cache: Config = expr`. name: uir-symbol. type: uir-symbol. init: uir.
+(struct uir-eff-state (name type init) #:transparent)
+
+;; `action A { ... }`. name: uir-symbol. steps: (listof uir) — each step is a
+;; uir-set! (state update) or an effect-invocation expression.
+(struct uir-eff-action (name steps) #:transparent)
+
+;; `always expr`. expr: uir.
+(struct uir-eff-invariant (expr) #:transparent)
+
+;; `never predicate` / `must predicate`. kind: 'never | 'must. predicate: uir.
+(struct uir-eff-policy (kind predicate) #:transparent)

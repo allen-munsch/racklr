@@ -223,10 +223,11 @@
 ;; effect context (established by the __withEffects decorator) enforces
 ;; must-not / ops / budget against the specific operation, then runs the
 ;; original call.
-(define (emit-perform name op call-str)
-  (format "__perform(~s, ~s, lambda: ~a)"
+(define (emit-perform name op args-str call-str)
+  (format "__perform(~s, ~s, [~a], lambda: ~a)"
           (symbol->string name)
           (if op (symbol->string op) "")
+          args-str
           call-str))
 
 (define (emit-effects-guard fn indent)
@@ -237,9 +238,15 @@
   (string-append
    "import inspect\n"
    "__effects_stack = []\n"
+   "__handlers_stack = []\n"
    "def __effects_current():\n"
    "    return __effects_stack[-1] if __effects_stack else None\n"
-   "def __perform(name, op, thunk):\n"
+   "def __current_handler(name):\n"
+   "    for frame in reversed(__handlers_stack):\n"
+   "        if frame[\"name\"] == name:\n"
+   "            return frame[\"handler\"]\n"
+   "    return None\n"
+   "def __perform_checked(name, op, thunk):\n"
    "    ctx = __effects_current()\n"
    "    if ctx is not None:\n"
    "        entry = ctx[\"row\"].get(name)\n"
@@ -266,6 +273,19 @@
    "        performed[name][\"any\"] += 1\n"
    "        performed[name][op] = performed[name].get(op, 0) + 1\n"
    "    return thunk()\n"
+   "def __perform(name, op, args, thunk):\n"
+   "    handler = __current_handler(name)\n"
+   "    if handler is not None:\n"
+   "        def resume():\n"
+   "            return __perform_checked(name, op, thunk)\n"
+   "        return handler(op, args, resume)\n"
+   "    return __perform_checked(name, op, thunk)\n"
+   "def __handle(name, handler, fn):\n"
+   "    __handlers_stack.append({\"name\": name, \"handler\": handler})\n"
+   "    try:\n"
+   "        return fn()\n"
+   "    finally:\n"
+   "        __handlers_stack.pop()\n"
    "def __withEffects(row):\n"
    "    _valid_modalities = (\"may\", \"must\", \"must-not\")\n"
    "    for _name, _entry in row.items():\n"
@@ -311,10 +331,21 @@
    "        return wrapped\n"
    "    return _decorator"))
 
+;; A call to the runtime handler installer `__handle(name, handler, fn)`: it
+;; needs the preamble even when no direct effect call is visible in the program.
+(define (handler-call? n)
+  (and (uir-call? n)
+       (let ([c (uir-call-callee n)])
+         (cond
+           [(uir-symbol? c) (string=? (uir-symbol-name c) "__handle")]
+           [(uir-var? c) (string=? (uir-symbol-name (uir-var-name c)) "__handle")]
+           [else #f]))))
+
 (define (program-has-effects? uir)
   (cond
     [(struct? uir)
-     (or (and (uir-call? uir)
+     (or (handler-call? uir)
+         (and (uir-call? uir)
               (direct-effect-of-callee (uir-call-callee uir)))
          (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
@@ -484,6 +515,17 @@
 
 ;; ── Expression emitter ─────────────────────────────────────────────
 
+;; Render one call argument, special-casing the (call "kwarg" (list name value))
+;; keyword-argument encoding produced by lower-argument.
+(define (emit-arg a)
+  (if (and (uir-call? a)
+           (uir-symbol? (uir-call-callee a))
+           (equal? (uir-symbol-name (uir-call-callee a)) "kwarg")
+           (= (length (uir-call-args a)) 2))
+      (string-append (emit-expr (first (uir-call-args a)))
+                     "=" (emit-expr (second (uir-call-args a))))
+      (emit-expr a)))
+
 (define (emit-expr uir)
   (cond [(uir-null? uir) "None"]
         [(uir-bool? uir) (if (uir-bool-value uir) "True" "False")]
@@ -522,11 +564,12 @@
                         [(and name (= (length args) 1) (equal? name "not"))
                          (string-append "not " (emit-expr (first args)))]
                         [else
-                         (let* ([call-str (string-append (emit-expr callee)
-                                                         "(" (string-join (map emit-expr args) ", ") ")")]
+                         (let* ([args-str (string-join (map emit-arg args) ", ")]
+                                [call-str (string-append (emit-expr callee)
+                                                         "(" args-str ")")]
                                 [eff (direct-effect-of-callee callee)])
                            (if eff
-                               (emit-perform eff (effect-op-of-callee callee) call-str)
+                               (emit-perform eff (effect-op-of-callee callee) args-str call-str)
                                call-str))]))))]
         [(uir-let? uir)
          (string-append "(" (uir-symbol-name (uir-let-name uir))

@@ -72,9 +72,20 @@ Done:
   and emits `() => fetch("/api")`. Pre-existing lowering bug, unrelated to
   effects; async function *declarations* are unaffected (they use
   `set!`+`async-fn`). Affects all arrows, bound or not.
-- `tsx-integration-test.rkt` now passes (verified iteration 6). The 4
-  ternary/conditional-rendering failures documented in earlier iterations were
-  fixed by the iteration-5 curried-call lowering change.
+- `tsx-integration-test.rkt` had its 4 ternary/conditional-rendering failures
+  (B12a/B12b, lines ~148-166) fixed by the iteration-5 curried-call lowering
+  change, but they are **failing again at HEAD (d4be85c, verified via `git
+  stash`)**: `{show && <span/>}` emits `createTextNode(show && (…))` and
+  `{cond ? <h1/> : <h2/>}` emits `createTextNode(cond ? …)` instead of the
+  expected `? (function()` / `: null` / `: (function()` shapes. A JSX
+  conditional-rendering regression, unrelated to effects. The rest of the suite
+  (including the JSDoc plumbing test) passes.
+- **`emit-router.rkt` auto-load wrapper is broken at HEAD**:
+  `(dynamic-require 'racklr/gen-test 'void)` asks for a `void` export that
+  `gen-test.rkt` does not provide, so calling the convenience `emit-pages-html`
+  before `gen-test` is loaded raises `name is not provided: void`. FIXED in
+  iteration 16 (changed `'void` → `#f`) since the JSDoc plumbing wires this
+  exact path.
 - **Curried-call lowering drops the RHS** — FIXED (iteration 5):
   `lower-single-expression`'s 2-kid call branch now routes through a recursive
   `lower-call-args` helper that handles the `singleExpression[innerSuffix,
@@ -277,9 +288,31 @@ Done:
    effect suites, `tsx-integration-test`, `esbuild-integration-test`,
    `emit-html-test`, `examples-roundtrip-test` 44/44.
 
+- Iteration 16 (DONE): JSDoc `@effects` extraction, unblocked by iteration 15,
+  plus its production plumbing. `racklr/effects/jsdoc-annot.rkt` parses an
+  `@effects { … }` comment (multiline `/** */` or `//`) into a `uir-effect-row`
+  (`extract-jsdoc-row`), finds comment tokens preceding a top-level declaration
+  (`jsdoc-annotations`/`take-annotation`/`min-token-offset`), and attaches the
+  row (`attach-jsdoc-row`) by writing it into the wrapped fn's effects slot
+  (fn/async-fn/gen-fn) or wrapping arrows/function expressions in
+  `(call "__withEffects" (list row fn))`. `lower-program` takes an optional 4th
+  `tokens` arg and applies JSDoc rows only when comment tokens are supplied.
+  Wired the production `emit-router` path: `page->js` and the layout lowering
+  now tokenize with `ts-tokenize` and pass those tokens to `lower-program`,
+  `make-emit-pages-html` threads `ts-tokenize` through, and the auto-load
+  `emit-pages-html` wrapper loads the TS parser with `gen-and-load-comments`.
+  Also fixed the auto-load wrapper's pre-existing
+  `(dynamic-require 'racklr/gen-test 'void)` → `#f`. Verified:
+  `effects-jsdoc-annot-test` (new suite: row parser + end-to-end function
+  decl / const arrow / export const / no-comment fast path), a new
+  `tsx-integration-test` JSDoc-through-`emit-pages` regression, `gen-comments-test`,
+  and an auto-load `emit-pages-html` smoke test emitting `__withEffects` with the
+  explicit `max` budget. The only `tsx-integration-test` failures are the
+  pre-existing B12 conditional-rendering regression (documented above).
+
 ## Still open (next iterations)
 
-- **JSDoc `@effects` extraction** — comment preservation is now DONE
+- ~~**JSDoc `@effects` extraction** — comment preservation is now DONE
   (iteration 15), so the blocker is cleared. Remaining: (a) plumb the preserved
   comment tokens into `lower-program` (optional 4th arg) so lowering can read
   them, (b) parse the `@effects {...}` row text into a `uir-effect-row` (the
@@ -288,7 +321,23 @@ Done:
   `(call "__withEffects" (list row fn))` internal shape. The generated lexer
   keeps `channel(HIDDEN)` tokens only when `#:preserve-comments?` is on, and
   the generated `parse` filters them out before matching, so the CST is
-  unchanged.
+  unchanged.~~ DONE (iteration 16): (a) `lower-program` takes an optional 4th
+  `tokens` arg; (b) `racklr/effects/jsdoc-annot.rkt` extracts the row
+  (`extract-jsdoc-row`) reusing the withEffects constraint convention; and (c)
+  `attach-jsdoc-row` writes the row into the wrapped fn (or wraps
+  arrows/function expressions in `__withEffects`). The production
+  `emit-router` pipeline now tokenizes with comments preserved
+  (`gen-and-load-comments` for the TS parser, threaded through
+  `page->js`/`make-emit-pages-html`), so a JSDoc `@effects` on a page/function
+  emits the `__withEffects` guard end-to-end.
+- **Effect handlers in Python/TypeScript** — runtime enforcement exists
+  (`__perform` instrumentation + ambient context stack, budget/must/must-not/
+  ops/scope), but there is no *user-level handler* syntax yet (Koka has
+  `uir-effect-handler`, but the Python/TS front ends only attach rows; nothing
+  lets a caller define and install a handler that intercepts `__perform`).
+  This is the next non-trivial-use-case gap: a way to write a handler that
+  catches an effect and supplies a value, rather than only throwing on
+  violation.
 - ~~**`scope` enforcement** — `scope` (`reads=`/`writes=`) prohibitions are not
   enforced at runtime in either target, only emitted as data.~~ DONE
   (iteration 14): both `__perform` preambles now enforce the direction half of
