@@ -3,7 +3,10 @@
 (require rackunit
          racklr/uir
          racklr/effects/contract
-         racklr/effects/infer)
+         racklr/effects/imports
+         racklr/effects/infer
+         racklr/effects/library-tokens
+         racklr/effects/pure-roots)
 
 ;; ── helpers ─────────────────────────────────────────────────────────
 
@@ -41,6 +44,46 @@
 (define (test-pure-function)
   (define p (prog (fn "f" (uir-null))))
   (check-equal? (hash-ref (infer-effects p) 'f) (empty-row)))
+
+(define (test-injectable-effect-tokens)
+  ;; direct-effect-of-callee honors an injected token lexicon; the default
+  ;; lexicon does not know the custom root.
+  (define custom
+    (struct-copy effect-tokens default-effect-tokens
+                 [llm-roots (set "mymodel")]))
+  (check-equal? (direct-effect-of-callee (dot (v "mymodel") "generate") custom) 'llm)
+  (check-false (direct-effect-of-callee (dot (v "mymodel") "generate")))
+  ;; declarative-callee? honors an injected lexicon too.
+  (define custom2
+    (struct-copy effect-tokens default-effect-tokens
+                 [declarative-names (set "MyField")]))
+  (check-true (declarative-callee? (v "MyField") custom2))
+  (check-false (declarative-callee? (v "MyField")))
+  ;; time-methods and root-method-effects honor an injected lexicon too.
+  (define custom3
+    (struct-copy effect-tokens default-effect-tokens
+                 [time-methods (set "pause")]
+                 [root-method-effects (hash 'mylib (hash "launch" 'process))]))
+  (check-equal? (direct-effect-of-callee (dot (v "clock") "pause") custom3) 'time)
+  (check-equal? (direct-effect-of-callee (dot (v "mylib") "launch") custom3) 'process)
+  (check-false (direct-effect-of-callee (dot (v "clock") "pause")))
+  (check-false (direct-effect-of-callee (dot (v "mylib") "launch")))
+  ;; the three pure-roots name tables honor an injected lexicon too.
+  (define custom4
+    (struct-copy effect-tokens default-effect-tokens
+                 [pure-stdlib-bare-names (set "mypartial")]))
+  (check-true (pure-stdlib-bare-callee? (v "mypartial") custom4))
+  (check-false (pure-stdlib-bare-callee? (v "mypartial")))
+  (define custom5
+    (struct-copy effect-tokens default-effect-tokens
+                 [gettext-names (set "mytrans")]))
+  (check-true (gettext-callee? (v "mytrans") custom5))
+  (check-false (gettext-callee? (v "mytrans")))
+  (define custom6
+    (struct-copy effect-tokens default-effect-tokens
+                 [pure-config-method-names (set "myconfig")]))
+  (check-true (pure-config-method-callee? (dot (v "parser") "myconfig") custom6))
+  (check-false (pure-config-method-callee? (dot (v "parser") "myconfig"))))
 
 (define (test-direct-llm)
   (define p (prog (fn "summarize"
@@ -285,6 +328,58 @@
   (define p (prog (fn "f" (uir-call (v "error") '()))))
   (define r (hash-ref (infer-effects p) 'f))
   (check-equal? (modality r 'unknown) 'unknown))
+
+(define (test-warning-and-exception-suffix-pure)
+  ;; `Warning(...)` and `GDALException(...)` construct exception/warning objects
+  ;; (pure); the raise site is the effect. The suffix match must extend beyond
+  ;; "Error" to "Warning"/"Exception", both PascalCase so snake_case callables
+  ;; stay unknown.
+  (define p (prog (fn "w" (uir-call (v "Warning") (list (uir-string "m"))))
+                  (fn "e" (uir-call (v "GDALException") (list (uir-string "m"))))))
+  (define rows (infer-effects p))
+  (check-equal? (hash-ref rows 'w) (empty-row))
+  (check-equal? (hash-ref rows 'e) (empty-row)))
+
+(define (test-pure-stdlib-bare)
+  ;; Directly-imported functools/ctypes value constructors lower to bare
+  ;; callees and must be pure, not `unknown`.
+  (define p (prog (fn "f" (uir-call (v "partial") (list (v "g"))))
+                  (fn "g" (uir-call (v "wraps") (list (v "h"))))
+                  (fn "h" (uir-call (v "byref") (list (v "x"))))
+                  (fn "i" (uir-call (v "POINTER") (list (v "c_int"))))))
+  (define rows (infer-effects p))
+  (check-equal? (hash-ref rows 'f) (empty-row))
+  (check-equal? (hash-ref rows 'g) (empty-row))
+  (check-equal? (hash-ref rows 'h) (empty-row))
+  (check-equal? (hash-ref rows 'i) (empty-row)))
+
+(define (test-chain-from-iterable-pure)
+  ;; `chain.from_iterable` (itertools.chain imported bare) is pure.
+  (define p (prog (fn "f" (uir-call (dot (v "chain") "from_iterable")
+                                    (list (uir-var (sym "it")))))))
+  (check-equal? (hash-ref (infer-effects p) 'f) (empty-row)))
+
+(define (test-warnings-warn-io)
+  ;; `warnings.warn` writes to stderr, so it is an io effect, not pure/unknown.
+  (define p (prog (fn "f" (uir-call (dot (v "warnings") "warn")
+                                    (list (uir-string "deprecated"))))))
+  (define r (hash-ref (infer-effects p) 'f))
+  (check-equal? (modality r 'io) 'may)
+  (check-equal? (row-names r) '(io)))
+
+(define (test-dunder-method-pure)
+  ;; Protocol ("dunder") methods on an arbitrary receiver initialize / compare /
+  ;; format / index the instance and perform no domain effect. `__call__` and
+  ;; `__exit__` can dispatch to effectful code, so they stay `unknown`.
+  (define p (prog (fn "i" (uir-call (dot (v "x") "__init__") (list (v "a"))))
+                  (fn "r" (uir-call (dot (v "x") "__repr__") '()))
+                  (fn "e" (uir-call (dot (v "x") "__eq__") (list (v "y"))))
+                  (fn "c" (uir-call (dot (v "x") "__call__") (list (v "y"))))))
+  (define rows (infer-effects p))
+  (check-equal? (hash-ref rows 'i) (empty-row))
+  (check-equal? (hash-ref rows 'r) (empty-row))
+  (check-equal? (hash-ref rows 'e) (empty-row))
+  (check-equal? (modality (hash-ref rows 'c) 'unknown) 'unknown))
 
 (define (test-gettext-alias-pure)
   ;; `_` is the gettext translation alias imported in Django modules; it maps
@@ -562,7 +657,7 @@
 ;; `unknown`.
 
 (define (py-class name methods)
-  (uir-class (uir-symbol name) (uir-null) '() methods))
+  (uir-class (uir-symbol name) '() '() methods))
 (define (py-method name body)
   (uir-method (uir-symbol name) '() body 'public))
 
@@ -610,7 +705,7 @@
 ;; `unknown`.
 
 (define (py-class/super name super methods)
-  (uir-class (uir-symbol name) super '() methods))
+  (uir-class (uir-symbol name) (if (uir-null? super) '() (list super)) '() methods))
 
 (define (test-inherited-self-method-resolution)
   ;; Base.save hits db; Derived inherits it. Derived.run calls self.save() and
@@ -621,6 +716,18 @@
                                   (list (py-method "run" (uir-call (dot (v "self") "save") '()))))))
   (define rows (infer-effects p))
   (check-equal? (modality (hash-ref rows 'Base.save) 'db) 'may)
+  (check-equal? (modality (hash-ref rows 'Derived.run) 'db) 'may))
+
+(define (test-multiple-inheritance-mixin-resolution)
+  ;; Derived(A, Mixin) inherits Mixin.save (db) through its SECOND base, even
+  ;; though the first base A is undefined. Left-to-right MRO finds Mixin.save.
+  (define p (prog (py-class "Mixin"
+                            (list (py-method "save" (uir-call (dot (v "db") "commit") '()))))
+                  (uir-class (uir-symbol "Derived")
+                             (list (uir-var (uir-symbol "A")) (uir-var (uir-symbol "Mixin")))
+                             '()
+                             (list (py-method "run" (uir-call (dot (v "self") "save") '()))))))
+  (define rows (infer-effects p))
   (check-equal? (modality (hash-ref rows 'Derived.run) 'db) 'may))
 
 (define (test-inherited-cls-method-resolution)
@@ -732,6 +839,192 @@
   (check-equal? (modality (hash-ref rows (cons "a.rkt" 'Command.handle)) 'db) 'may)
   (check-equal? (modality (hash-ref rows (cons "a.rkt" 'Command.run)) 'db) 'may)
   (check-equal? (modality (hash-ref rows (cons "b.rkt" 'Command.handle)) 'llm) 'may))
+
+(define (test-imported-class-cap-effect)
+  ;; `conn.execute(...)` where `conn` was imported to a class whose `execute`
+  ;; is tagged db.write: resolves through the import graph to a typed db.write.
+  (define p (prog (fn "run"
+                      (uir-call (dot (v "conn") "execute")
+                                (list (uir-string "SELECT 1"))))))
+  (define env
+    (import-env (hash "app.py" "app")
+                (hash "app" (hash "conn" (handle 'class "mydb.conn" "Connection")))
+                (hash "Connection.execute" (effect-cap 'db '(db<Connection>.write)))))
+  (define r (hash-ref (infer-effects-all (list (cons "app.py" p)) #:import-env env)
+                      (cons "app.py" 'run)))
+  (check-equal? (row-names r) '(db))
+  (check-equal? (modality r 'db) 'may)
+  (check-equal? (entry-ops (row-lookup r 'db)) '(db<Connection>.write)))
+
+(define (test-imported-module-pure)
+  ;; `sqlmod.parse(...)` where `sqlmod` resolves to module `sqlparse` (tagged
+  ;; pure): classified pure (no entry), not `unknown`.
+  (define p (prog (fn "fmt"
+                      (uir-call (dot (v "sqlmod") "parse")
+                                (list (uir-string "x"))))))
+  (define env
+    (import-env (hash "app.py" "app")
+                (hash "app" (hash "sqlmod" (handle 'module "sqlparse" #f)))
+                (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "app.py" p)) #:import-env env)
+                      (cons "app.py" 'fmt)))
+  (check-equal? (row-names r) '()))
+
+;; ── receiver-type dataflow ──────────────────────────────────────────
+;; `x = KnownClass(...)` / `self.attr = KnownClass(...)` tracks the receiver's
+;; class, so a later `x.m(...)` resolves through the class's derived capability
+;; instead of the flat method-name tables.
+
+(define (test-receiver-type-local-constructor)
+  ;; `qs = QuerySet(); qs.filter(...)` resolves through the tracked receiver
+  ;; class to a typed db.read, not the flat ORM method-name heuristic.
+  (define models (prog (py-class "QuerySet" (list (py-method "filter" (uir-null))))))
+  (define app
+    (prog (fn "run"
+              (uir-block
+               (list (uir-set! (v "qs") (uir-call (v "QuerySet") '()))
+                     (uir-call (dot (v "qs") "filter") '()))))))
+  (define env
+    (import-env (hash "models.py" "django.db.models"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "models.py" models)
+                                               (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'run)))
+  (check-equal? (row-names r) '(db))
+  (check-equal? (entry-ops (row-lookup r 'db)) '(db<QuerySet>.read)))
+
+(define (test-receiver-type-self-attr)
+  ;; `self.qs = QuerySet(); self.qs.filter(...)` in the same method: the
+  ;; self-attribute is tracked and resolved to a typed db.read.
+  (define models (prog (py-class "QuerySet" (list (py-method "filter" (uir-null))))))
+  (define app
+    (prog (py-class "Repo"
+                    (list (py-method "run"
+                                     (uir-block
+                                      (list (uir-set! (uir-get (v "self") (sym "qs"))
+                                                      (uir-call (v "QuerySet") '()))
+                                            (uir-call (dot (uir-get (v "self") (sym "qs")) "filter")
+                                                      '()))))))))
+  (define env
+    (import-env (hash "models.py" "django.db.models"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "models.py" models)
+                                               (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'Repo.run)))
+  (check-equal? (row-names r) '(db))
+  (check-equal? (entry-ops (row-lookup r 'db)) '(db<QuerySet>.read)))
+
+(define (test-receiver-type-pure-class)
+  ;; A receiver tracked to a class in a pure module is pure even when its
+  ;; method name collides with an ORM verb (`filter`).
+  (define parser (prog (py-class "MyParser" (list (py-method "filter" (uir-null))))))
+  (define app
+    (prog (fn "run"
+              (uir-block
+               (list (uir-set! (v "p") (uir-call (v "MyParser") '()))
+                     (uir-call (dot (v "p") "filter") '()))))))
+  (define env
+    (import-env (hash "parser.py" "sqlparse"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "parser.py" parser)
+                                                (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'run)))
+  (check-equal? (row-names r) '()))
+
+(define (test-receiver-type-class-attr-cross-method)
+  ;; `self.stdout = OutputWrapper()` set in __init__ flows to handle() (same
+  ;; class, via a subclass in the same file), so self.stdout.write resolves
+  ;; through the tracked receiver to a typed io<OutputWrapper>.write rather than
+  ;; the coarse `io` name heuristic.
+  (define io (prog (py-class "OutputWrapper" (list (py-method "write" (uir-null))))))
+  (define app
+    (prog (py-class "BaseCommand"
+                    (list (py-method "__init__"
+                                     (uir-set! (uir-get (v "self") (sym "stdout"))
+                                               (uir-call (v "OutputWrapper") '())))))
+          (py-class/super "Command" (v "BaseCommand")
+                          (list (py-method "handle"
+                                           (uir-call (dot (uir-get (v "self") (sym "stdout")) "write")
+                                                     (list (uir-string "x"))))))))
+  (define env
+    (import-env (hash "io.py" "django.core.management.base"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "io.py" io) (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'Command.handle)))
+  (check-equal? (row-names r) '(io))
+  (check-equal? (entry-ops (row-lookup r 'io)) '(io<OutputWrapper>.write)))
+
+(define (test-receiver-type-class-attr-cross-file)
+  ;; BaseCommand.__init__ (one file) sets self.stdout; Command.handle (another
+  ;; file, a subclass) uses it. The per-class env follows the MRO across files.
+  (define io (prog (py-class "OutputWrapper" (list (py-method "write" (uir-null))))))
+  (define base
+    (prog (py-class "BaseCommand"
+                    (list (py-method "__init__"
+                                     (uir-set! (uir-get (v "self") (sym "stdout"))
+                                               (uir-call (v "OutputWrapper") '())))))))
+  (define app
+    (prog (py-class/super "Command" (v "BaseCommand")
+                          (list (py-method "handle"
+                                           (uir-call (dot (uir-get (v "self") (sym "stdout")) "write")
+                                                     (list (uir-string "x"))))))))
+  (define env
+    (import-env (hash "io.py" "django.core.management.base"
+                      "base.py" "app"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "io.py" io)
+                                               (cons "base.py" base)
+                                               (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'Command.handle)))
+  (check-equal? (row-names r) '(io))
+  (check-equal? (entry-ops (row-lookup r 'io)) '(io<OutputWrapper>.write)))
+
+(define (test-receiver-type-manager-attr)
+  ;; `User.objects.filter(...)`: `objects` is set by the framework metaclass, not
+  ;; by an assignment in any method body, so the receiver-type env cannot see it.
+  ;; Resolve `User` to its defining module's domain instead of the `objects`
+  ;; name table, yielding the typed db<User>.read op.
+  (define models (prog (py-class "User" (list (py-method "save" (uir-null))))))
+  (define app
+    (prog (fn "q" (uir-call (dot (dot (v "User") "objects") "filter")
+                            (list (uir-record '()))))))
+  (define env
+    (import-env (hash "models.py" "django.db.models"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "models.py" models)
+                                               (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'q)))
+  (check-equal? (row-names r) '(db))
+  (check-equal? (entry-ops (row-lookup r 'db)) '(db<User>.read)))
+
+(define (test-receiver-type-manager-attr-pure)
+  ;; A class in a pure module used as a manager root is pure even though the
+  ;; method name (`filter`) collides with an ORM verb.
+  (define parser (prog (py-class "MyParser" (list (py-method "filter" (uir-null))))))
+  (define app
+    (prog (fn "q" (uir-call (dot (dot (v "MyParser") "objects") "filter")
+                            (list (uir-record '()))))))
+  (define env
+    (import-env (hash "parser.py" "sqlparse"
+                      "app.py" "app")
+                (hash) (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "parser.py" parser)
+                                               (cons "app.py" app))
+                                         #:import-env env)
+                      (cons "app.py" 'q)))
+  (check-equal? (row-names r) '()))
 
 (define (test-annotate-writes-back)
   (define p (prog (fn "summarize"
@@ -953,6 +1246,7 @@
   (test-empty-program)
   (test-lambda-not-collected)
   (test-pure-function)
+  (test-injectable-effect-tokens)
   (test-direct-llm)
   (test-direct-db-dotted)
   (test-django-model-objects)
@@ -990,6 +1284,11 @@
   (test-exception-constructor-pure)
   (test-dotted-exception-constructor-pure)
   (test-non-error-suffix-stays-unknown)
+  (test-warning-and-exception-suffix-pure)
+  (test-pure-stdlib-bare)
+  (test-chain-from-iterable-pure)
+  (test-warnings-warn-io)
+  (test-dunder-method-pure)
   (test-gettext-alias-pure)
   (test-gettext-family-pure)
   (test-string-literal-method-pure)
@@ -1031,6 +1330,7 @@
   (test-self-method-scoped-to-owner)
   (test-unqualified-object-method-stays-unknown)
   (test-inherited-self-method-resolution)
+  (test-multiple-inheritance-mixin-resolution)
   (test-inherited-cls-method-resolution)
   (test-inherited-other-class-method-resolution)
   (test-inherited-method-most-derived-wins)
@@ -1040,6 +1340,15 @@
   (test-super-call-whole-program)
   (test-whole-program-cross-file-inheritance)
   (test-whole-program-collision-stays-distinct)
+  (test-imported-class-cap-effect)
+  (test-imported-module-pure)
+  (test-receiver-type-local-constructor)
+  (test-receiver-type-self-attr)
+  (test-receiver-type-pure-class)
+  (test-receiver-type-class-attr-cross-method)
+  (test-receiver-type-class-attr-cross-file)
+  (test-receiver-type-manager-attr)
+  (test-receiver-type-manager-attr-pure)
   (test-annotate-writes-back)
   (test-annotate-preserves-explicit-row)
   (test-annotate-skips-empty-inferred)

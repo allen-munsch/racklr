@@ -780,45 +780,49 @@
   (define kids (node-children cst))
   (define suite-node (or (findf (λ (k) (eq? (any-tree-tag k) 'suite)) kids)
                          (findf (λ (k) (eq? (any-tree-tag k) 'block)) kids)))
-  ;; Extract the first positional base from the '(' arglist? ')' group: walk the
-  ;; arglist arguments and take the first whose leading child is a `test` (a
-  ;; positional base), skipping keyword / * / ** bases (e.g. metaclass=...).
-   ;; A positional base lowers from either a `test` node or (after the walrus
-   ;; rewiring of `argument : namedexpr_test ...`) a `namedexpr_test` node; both
-   ;; are non-keyword, non-star bases and must be accepted.
-   (define (positional-base? n) (member (any-tree-tag n) '(test namedexpr_test)))
-   (define (find-super-node arglist)
-     (let loop ([remaining (any-tree-children arglist)])
-       (cond
-         [(null? remaining) #f]
-         [(and (list? (car remaining)) (pair? (car remaining)))
-          (or (loop (car remaining)) (loop (cdr remaining)))]
-         [(cst-node? (car remaining))
-          (define t (any-tree-tag (car remaining)))
-          (cond
-            [(eq? t 'argument)
-             (define aks (node-children (car remaining)))
-             (if (and (pair? aks) (positional-base? (first aks)))
-                 (first aks)
-                 (loop (cdr remaining)))]
-            [(eq? t 'group)
-             (define arg (for/or ([c (any-tree-children (car remaining))])
-                           (and (cst-node? c) (eq? (any-tree-tag c) 'argument) c)))
-             (if arg
-                 (let ([aks (node-children arg)])
-                   (if (and (pair? aks) (positional-base? (first aks)))
-                       (first aks)
-                       (loop (cdr remaining))))
-                 (loop (cdr remaining)))]
-            [else (loop (cdr remaining))])]
-         [else (loop (cdr remaining))])))
-  (define super-node
+  ;; Extract ALL positional bases from the '(' arglist? ')' group: walk the
+  ;; arglist arguments and collect every base whose leading child is a `test`
+  ;; (a positional base), skipping keyword / * / ** bases (e.g. metaclass=...).
+  ;; A positional base lowers from either a `test` node or (after the walrus
+  ;; rewiring of `argument : namedexpr_test ...`) a `namedexpr_test` node; both
+  ;; are non-keyword, non-star bases and must be accepted. A keyword base has a
+  ;; `keyword` node as its leading child (not `test`), and `*`/`**` bases carry a
+  ;; `*`/`**` token, so both are skipped. Bases keep left-to-right source order
+  ;; (Python's C3 MRO); no bases lowers to '().
+  (define (positional-base? n) (member (any-tree-tag n) '(test namedexpr_test)))
+  (define (find-super-nodes arglist)
+    (define bases '())
+    (let loop ([remaining (any-tree-children arglist)])
+      (cond
+        [(null? remaining) (void)]
+        [(and (list? (car remaining)) (pair? (car remaining)))
+         (loop (car remaining))
+         (loop (cdr remaining))]
+        [(cst-node? (car remaining))
+         (define t (any-tree-tag (car remaining)))
+         (cond
+           [(eq? t 'argument)
+            (define aks (node-children (car remaining)))
+            (when (and (pair? aks) (positional-base? (first aks)))
+              (set! bases (cons (first aks) bases)))]
+           [(eq? t 'group)
+            (for ([c (any-tree-children (car remaining))])
+              (when (and (cst-node? c) (eq? (any-tree-tag c) 'argument))
+                (define aks (node-children c))
+                (when (and (pair? aks) (positional-base? (first aks)))
+                  (set! bases (cons (first aks) bases)))))]
+           [else (void)])
+         (loop (cdr remaining))]
+        [else (loop (cdr remaining))]))
+    (reverse bases))
+  (define super-nodes
     (for/or ([k kids])
       (and (eq? (any-tree-tag k) 'group)
            (let ([gk (node-children k)])
              (and (pair? gk) (eq? (any-tree-tag (first gk)) 'arglist)
-                  (find-super-node (first gk)))))))
-  (define super (if super-node (lower-expr super-node tk-type tk-value) (uir-null)))
+                  (find-super-nodes (first gk)))))))
+  (define supers (or super-nodes '()))
+  (define super-exprs (map (lambda (n) (lower-expr n tk-type tk-value)) supers))
   ;; Walk the suite/block to extract fields (assignments) and methods (funcdef)
   (define fields '())
   (define methods '())
@@ -897,7 +901,7 @@
       (cond [(cst-node? k) (walk k)]
             [(and (list? k) (pair? k)) (for-each (lambda (cc) (when (cst-node? cc) (walk cc))) k)]
             [else (void)])))
-  (uir-class (uir-symbol (or name "?class")) super
+  (uir-class (uir-symbol (or name "?class")) super-exprs
              (reverse fields) (reverse methods)))
 
 (define (lower-method cst tk-type tk-value)

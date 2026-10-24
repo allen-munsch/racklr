@@ -179,10 +179,40 @@
                 (and (node? a) (eq? (node-type a) 'list))))
   (check-equal? (materialize "x") (list (node 'str "x"))))
 
+;; ── OpenCog-compatible effect atoms ─────────────────────────────────
+
+(define (test-open-cog-atoms)
+  ;; A typed capability carries its receiver as a distinct node.
+  (define op (effect-op 'db "QuerySet" "read"))
+  (check-true (link? op))
+  (check-equal? (link-type op) 'effect-op)
+  (check-equal? (link-out op)
+                (list (node 'domain 'db) (node 'type "QuerySet") (node 'op "read")))
+
+  ;; MRO edge serializes to an InheritanceLink.
+  (define inh (inherits "QuerySet" "Model"))
+  (check-equal? (atom->atomese inh)
+                "(InheritanceLink (ConceptNode \"QuerySet\") (ConceptNode \"Model\"))")
+
+  ;; Typed op serializes to an EvaluationLink whose predicate names domain.verb
+  ;; and whose argument is the receiver type node.
+  (check-equal? (atom->atomese op)
+                "(EvaluationLink (PredicateNode \"db.read\") (ConceptNode \"QuerySet\"))")
+
+  ;; Two ops on the same receiver share that receiver node under flattening.
+  (define op2 (effect-op 'db "QuerySet" "write"))
+  (define flat (flatten-atoms (list op op2)))
+  (define receiver-nodes
+    (filter (λ (a) (and (node? a) (eq? (node-type a) 'type)
+                        (equal? (node-name a) "QuerySet")))
+            flat))
+  (check-equal? (length receiver-nodes) 1))
+
 (module+ main
   (test-effect-equivalence)
   (test-typed-effect-subtyping)
   (test-pattern-query)
   (test-capability-composition)
   (test-materialize)
+  (test-open-cog-atoms)
   (displayln "All hypergraph tests passed."))

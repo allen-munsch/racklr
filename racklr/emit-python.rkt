@@ -393,9 +393,9 @@
 (define (emit-classdef uir indent)
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-symbol-name (uir-class-name uir)))
-  (define super (uir-class-super uir))
+  (define supers (uir-class-super uir))
   (define super-str
-    (if (uir-null? super) "" (string-append "(" (emit-expr super) ")")))
+    (if (null? supers) "" (string-append "(" (string-join (map emit-expr supers) ", ") ")")))
   (define fields (uir-class-fields uir))
   (define methods (uir-class-methods uir))
   (define indent1 (+ indent 1))

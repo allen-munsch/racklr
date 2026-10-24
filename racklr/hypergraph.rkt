@@ -43,7 +43,9 @@
   t-base t-fn t-listof t-ref
   type-leq
   ;; capability instance (Effervesce-style needs/provides)
-  cap-ref cap-satisfied?)
+  cap-ref cap-satisfied?
+  ;; OpenCog-compatible effect atoms
+  effect-op inherits atom->atomese flatten-atoms)
 
 ;; ── atoms ───────────────────────────────────────────────────────────
 
@@ -319,6 +321,69 @@
                  (type-leq n p)))))
    needs))
 
+;; ── OpenCog-compatible effect atoms ─────────────────────────────────
+;;
+;; The projection of a typed capability `db<QuerySet>.read` into atom form.
+;; A bare `db.read` conflates every receiver that shares the verb; the OpenCog
+;; shape keeps the receiver as its own node and connects it to the operation
+;; with a hyperedge, so two reads on different receiver classes stay distinct
+;; atoms and can be related by MRO inheritance.
+
+;; A typed operation capability: (effect-op domain receiver verb). The receiver
+;; TYPE is a distinct node (not folded into the op name) so operations on
+;; different classes remain distinct atoms. Serializes to an EvaluationLink:
+;; (EvaluationLink (PredicateNode "db.read") (ConceptNode "QuerySet")).
+(define (effect-op domain receiver verb)
+  (link 'effect-op (list (node 'domain domain) (node 'type receiver) (node 'op verb))))
+
+;; Subtyping / MRO edge: (inherits child parent). Capabilities flow from parent
+;; to child (a subclass holds every capability its superclass holds).
+;; Serializes to (InheritanceLink (ConceptNode "Child") (ConceptNode "Parent")).
+(define (inherits child parent)
+  (link 'inherits (list (node 'type child) (node 'type parent))))
+
+;; ── Atomese serialization ───────────────────────────────────────────
+
+;; Capitalized link-type name with the "Link" suffix, e.g. 'effect-op →
+;; 'EffectOpLink. Special-case the canonical OpenCog names (InheritanceLink,
+;; EvaluationLink) in atom->atomese below.
+(define (atomese-link-name ty)
+  (define s (symbol->string ty))
+  (string->symbol
+   (string-append (string-upcase (substring s 0 1)) (substring s 1) "Link")))
+
+;; Render one atom as an OpenCog Atomese S-expression string. Faithful node
+;; names: type/domain/str/sym → ConceptNode, op/verb → PredicateNode, num →
+;; NumberNode. Faithful link names for the effect vocabulary (InheritanceLink,
+;; EvaluationLink); everything else uses the capitalized link type.
+(define (atom->atomese a)
+  (cond
+    [(node? a)
+     (define ty (node-type a))
+     (define nm (node-name a))
+     (cond
+       [(memq ty '(op verb)) (format "(PredicateNode ~s)" nm)]
+       [(eq? ty 'num) (format "(NumberNode ~s)" nm)]
+       [else (format "(ConceptNode ~s)" nm)])]
+    [(link? a)
+     (define os (link-out a))
+     (case (link-type a)
+       [(effect-op)
+        (define d (first os)) (define t (second os)) (define o (third os))
+        (format "(EvaluationLink (PredicateNode ~s) (ConceptNode ~s))"
+                (format "~a.~a" (node-name d) (node-name o))
+                (node-name t))]
+       [(inherits)
+        (format "(InheritanceLink (ConceptNode ~s) (ConceptNode ~s))"
+                (node-name (first os)) (node-name (second os)))]
+       [else
+        (format "(~a~a)"
+                (atomese-link-name (link-type a))
+                (if (null? os) ""
+                    (string-append " " (string-join (map atom->atomese os) " "))))])]
+    [(var? a) (format "~s" (var-name a))]
+    [else (format "~s" a)]))
+
 ;; ── generic AST / S-expression materialization ──────────────────────
 ;;
 ;; Turn any value — a transparent Racket struct tree (a UIR AST), a nested
@@ -379,6 +444,27 @@
        leaf]))
   (ref v)
   (reverse atoms))
+
+;; ── flat atomspace closure ──────────────────────────────────────────
+;;
+;; An AtomSpace is a FLAT set: every node referenced by a link is itself an
+;; atom. Our link constructors embed their child nodes, so a set of top-level
+;; links under-represents the space (a receiver type node nested inside an
+;; effect-op hyperedge is not queryable on its own). Expand a set of atoms into
+;; its full closure over link-out — every reachable node plus the links — so the
+;; projection can be indexed, deduplicated and serialized exactly as an
+;; AtomSpace holds it. Dedup is by `equal?` (transparent structs), so the same
+;; ConceptNode appearing in many links collapses to one atom.
+(define (flatten-atoms atoms)
+  (define seen (make-hash))
+  (define out '())
+  (let loop ([as atoms])
+    (for ([a (in-list as)])
+      (unless (hash-ref seen a #f)
+        (hash-set! seen a #t)
+        (set! out (cons a out))
+        (when (link? a) (loop (link-out a))))))
+  (reverse out))
 
 (module+ main
   (displayln "racklr/hypergraph — typed-hypergraph kernel loaded."))

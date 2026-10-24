@@ -147,7 +147,7 @@
       (define se (find-kid grp 'singleExpression))
       (when se
         (set! super (lower-single-expression se tk-type tk-value)))))
-  (uir-class class-name super '() '()))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() '()))
 
 (define (lower-expr-atom value tk-type tk-value)
   (cond [(cst-node? value)

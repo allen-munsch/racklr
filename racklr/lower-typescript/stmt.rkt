@@ -676,7 +676,7 @@
               (for/list ([elem (in-list element-list)]
                          #:when (cst-node? elem))
                 (lower-class-element elem tk-type tk-value))))))
-  (uir-class class-name super '() methods))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() methods))
 
 (define (extract-param-list fpl tk-type tk-value)
   ;; Extract parameter names from formalParameterList or parameterList

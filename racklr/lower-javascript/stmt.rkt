@@ -243,7 +243,7 @@
       (define se (find-kid grp 'singleExpression))
       (when se
         (set! super (lower-single-expression se tk-type tk-value)))))
-  (uir-class class-name super '() '()))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() '()))
 
 (define (lower-switch-stmt node tk-type tk-value)
   (define kids (kids-of node))

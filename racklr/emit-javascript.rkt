@@ -353,10 +353,10 @@
              (emit-js class)
              (string-join (map emit-js args) ", "))]
     
-    [(uir-class name super fields methods)
+    [(uir-class name supers fields methods)
      (format "class ~a~a {~a}"
              (emit-js name)
-             (if (uir-null? super) "" (format " extends ~a" (emit-js super)))
+             (if (null? supers) "" (format " extends ~a" (emit-js (car supers))))
              (if (null? methods)
                  ""
                  (string-append "" (string-join (map emit-statement methods) ""))))]

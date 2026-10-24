@@ -102,9 +102,24 @@
   (check-true (uir-block? uir) "file class lowers to uir-block")
   (define klass (first (uir-block-stmts uir)))
   (check-true (uir-class? klass) "class stmt lowers to uir-class")
-  (define sup (uir-class-super klass))
+  (define sup (first (uir-class-super klass)))
   (check-true (uir-var? sup) "super lowers to uir-var")
   (check-equal? (uir-symbol-name (uir-var-name sup)) "Bar" "super name is Bar"))
+
+;; Multiple inheritance: every positional base is captured in left-to-right
+;; order; keyword (`metaclass=`) and star bases are skipped.
+(let ([cst (py-parse-file-input "class C(A, B, metaclass=M):\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define klass (first (uir-block-stmts uir)))
+  (define supers (uir-class-super klass))
+  (check-equal? (length supers) 2 "two positional bases captured")
+  (check-equal? (uir-symbol-name (uir-var-name (first supers))) "A" "first base is A")
+  (check-equal? (uir-symbol-name (uir-var-name (second supers))) "B" "second base is B"))
+
+;; Multiple bases round-trip through emit-python.
+(let ([cst (py-parse-file-input "class C(A, B):\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-equal? (emit-python uir) "class C(A, B):\n    pass" "multi-base emit"))
 
 ;; ── Operators (left-recursive expr flattening) ────────────────────
 ;; Uses py-parse-file-input so these run regardless of the single_input bug.
@@ -718,7 +733,7 @@
 (let ([cst (py-parse "class Foo:\n    pass\n\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
   (check-true (uir-class? uir) "class lowers to uir-class")
-  (check-true (uir-null? (uir-class-super uir)) "no superclass"))
+  (check-equal? (uir-class-super uir) '() "no superclass"))
 
 ;; ── File input / multi-statement ────────────────────────────────────
 
