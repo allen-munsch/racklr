@@ -297,7 +297,7 @@
      (struct-copy uir-paren p [inner (strip-head-elements (uir-paren-inner p))])]
     [_ node]))
 
-(define (page->js ts-parse ts-tok-type ts-tok-value jsx-parse jsx-tok-type jsx-tok-value
+(define (page->js ts-parse ts-tokenize ts-tok-type ts-tok-value jsx-parse jsx-tok-type jsx-tok-value
                   source #:css-mapping [css-mapping #f]
                   #:project-root [project-root #f]
                   #:original-source [original-source #f])
@@ -316,7 +316,7 @@
                     #:jsx-lower-tk-type jsx-tok-type
                     #:jsx-lower-tk-value jsx-tok-value))
   (define ts-cst (ts-parse processed))
-  (define ts-uir (ts-lower:lower-program ts-cst ts-tok-type ts-tok-value))
+  (define ts-uir (ts-lower:lower-program ts-cst ts-tok-type ts-tok-value (ts-tokenize processed)))
   (define hooks-lowered (lower-hooks ts-uir))
   (define uir (restore-jsx hooks-lowered jsx-uir))
   (define head-html (collect-head-html uir))

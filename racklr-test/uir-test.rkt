@@ -109,13 +109,13 @@
 ;; ── Tier 1 Construction ─────────────────────────────────────────────
 
 (define (test-class-construction)
-  (define c (uir-class (uir-symbol "Foo") (uir-null)
+  (define c (uir-class (uir-symbol "Foo") '()
                        (list (uir-field (uir-symbol "x") (uir-symbol "int") (uir-null)))
                        (list (uir-method (uir-symbol "m") '() (uir-null) 'public))))
   (check-true (uir? c) "uir-class satisfies uir?")
   (check-equal? (uir-tag c) 'class "uir-class tag is 'class")
   (check-equal? (uir-symbol-name (uir-class-name c)) "Foo" "uir-class name")
-  (check-true (uir-null? (uir-class-super c)) "uir-class no super")
+  (check-equal? (uir-class-super c) '() "uir-class no super")
   (check-equal? (length (uir-class-fields c)) 1 "uir-class has 1 field")
   (check-equal? (length (uir-class-methods c)) 1 "uir-class has 1 method"))
 
@@ -387,7 +387,7 @@
     (check-equal? (uir-number-value (uir-return-value u2)) "42" "uir-return round-trip"))
 
   ;; Class
-  (let* ([u1 (uir-class (uir-symbol "Foo") (uir-null)
+  (let* ([u1 (uir-class (uir-symbol "Foo") '()
                         (list (uir-field (uir-symbol "x") (uir-symbol "int") (uir-number "1")))
                         (list (uir-method (uir-symbol "m") '() (uir-null) 'public)))]
          [s1 (uir->sexp u1)]
@@ -545,6 +545,46 @@
   (check-true (uir-record? u2) "json round-trip preserves record type")
   (check-equal? (length (uir-record-entries u2)) 2 "json round-trip preserves entries"))
 
+;; ── Schema versioning and migration ────────────────────────────────
+
+(define (test-versioned-sexp)
+  (define u (uir-number "42"))
+  (define vsexp (uir->versioned-sexp u))
+  (check-equal? (car vsexp) 'uir "version envelope is tagged 'uir")
+  (check-equal? (cadr vsexp) UIR-SCHEMA-VERSION "envelope carries the current schema version")
+  (check-equal? (versioned-sexp->uir vsexp) u "versioned round-trip is identity")
+  (check-equal? (json->uir (uir->json u)) u "json round-trip goes through the version envelope"))
+
+(define (test-schema-migration)
+  ;; The migration chain is what turns a struct field-count change into a
+  ;; controlled event. Exercise it with a toy v0->v1 migration over a local
+  ;; table so the global registry is left untouched.
+  (define (v0->v1 p)
+    (cond [(and (pair? p) (eq? (car p) 'number) (integer? (cadr p)))
+           `(number ,(number->string (cadr p)))]
+          [(pair? p)
+           (cons (v0->v1 (car p)) (v0->v1 (cdr p)))]
+          [else p]))
+  (define migrations (make-hasheqv))
+  (hash-set! migrations 0 v0->v1)
+  (check-equal? (migrate-uir-payload '(number "42") UIR-SCHEMA-VERSION migrations)
+                '(number "42")
+                "migration at current version is a no-op")
+  (check-equal? (migrate-uir-payload '(number 42) 0 migrations)
+                '(number "42")
+                "v0->v1 migration rewrites bare integers to strings")
+  (define u (versioned-sexp->uir `(uir 0 (number 42)) migrations))
+  (check-equal? (uir-number-value u) "42" "versioned reader migrates before parsing")
+  (check-exn exn:fail?
+             (lambda () (versioned-sexp->uir '(uir 0 (number 42))))
+             "missing migration raises")
+  (check-exn exn:fail?
+             (lambda () (versioned-sexp->uir `(uir ,(add1 UIR-SCHEMA-VERSION) (number "42"))))
+             "future schema version raises")
+  (check-exn exn:fail?
+             (lambda () (versioned-sexp->uir '(number "42")))
+             "unversioned sexp raises"))
+
 ;; ── uir-tag ────────────────────────────────────────────────────────
 
 (define (test-uir-tag)
@@ -563,7 +603,7 @@
   (check-equal? (uir-tag (uir-if (uir-null) (uir-null) (uir-null))) 'if)
   (check-equal? (uir-tag (uir-block '())) 'block)
   (check-equal? (uir-tag (uir-return (uir-null))) 'return)
-  (check-equal? (uir-tag (uir-class (uir-symbol "A") (uir-null) '() '())) 'class)
+  (check-equal? (uir-tag (uir-class (uir-symbol "A") '() '() '())) 'class)
   (check-equal? (uir-tag (uir-method (uir-symbol "m") '() (uir-null) 'public)) 'method)
   (check-equal? (uir-tag (uir-field (uir-symbol "f") (uir-null) (uir-null))) 'field)
   (check-equal? (uir-tag (uir-new (uir-symbol "X") '())) 'new)
@@ -622,5 +662,7 @@
   (test-subtype-construction)
   (test-sexp-roundtrip)
   (test-json-roundtrip)
+  (test-versioned-sexp)
+  (test-schema-migration)
   (test-uir-tag)
   (displayln "All uir tests passed."))

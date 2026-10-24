@@ -1,6 +1,8 @@
 #lang racket
 
-(require racklr/uir)
+(require racklr/uir
+         racklr/effects/infer
+         racklr/effects/python-annot)
 
 (provide emit-python)
 
@@ -47,6 +49,8 @@
          (if (uir-fn-name uir)
              (emit-funcdef uir indent)
              (string-append spc (emit-lambda uir)))]
+        [(async-fn-call? uir)
+         (emit-funcdef (first (uir-call-args uir)) indent #t)]
         [(uir-class? uir)
          (emit-classdef uir indent)]
         [(uir-import? uir)
@@ -215,17 +219,74 @@
     ", ")
    "}"))
 
+;; Wrap a directly-performed effect call in the runtime guard: the ambient
+;; effect context (established by the __withEffects decorator) enforces
+;; must-not / ops / budget against the specific operation, then runs the
+;; original call.
+(define (emit-perform name op args-str call-str)
+  (format "__perform(~s, ~s, [~a], lambda: ~a)"
+          (symbol->string name)
+          (if op (symbol->string op) "")
+          args-str
+          call-str))
+
 (define (emit-effects-guard fn indent)
   (define spc (make-string (* indent 4) #\space))
-  (string-append spc "@__validate_effects(" (emit-effect-row (uir-fn-effects fn)) ")"))
+  (string-append spc "@__withEffects(" (emit-effect-row (uir-fn-effects fn)) ")"))
 
 (define (effects-guard-preamble)
   (string-append
-   "def __validate_effects(row):\n"
-   "    \"\"\"Validate an effect row and attach it to the decorated function.\n"
-   "\n"
-   "    Pure-Python runtime guard: no FFI, no shared library.\n"
-   "    \"\"\"\n"
+   "import inspect\n"
+   "__effects_stack = []\n"
+   "__handlers_stack = []\n"
+   "def __effects_current():\n"
+   "    return __effects_stack[-1] if __effects_stack else None\n"
+   "def __current_handler(name):\n"
+   "    for frame in reversed(__handlers_stack):\n"
+   "        if frame[\"name\"] == name:\n"
+   "            return frame[\"handler\"]\n"
+   "    return None\n"
+   "def __perform_checked(name, op, thunk):\n"
+   "    ctx = __effects_current()\n"
+   "    if ctx is not None:\n"
+   "        entry = ctx[\"row\"].get(name)\n"
+   "        if entry is None:\n"
+   "            raise RuntimeError(\"effect prohibited: \" + name)\n"
+   "        modality = entry.get(\"modality\", \"may\")\n"
+   "        if modality == \"must-not\":\n"
+   "            raise RuntimeError(\"effect prohibited: \" + name)\n"
+   "        ops = entry.get(\"ops\", [])\n"
+   "        if ops and op not in ops:\n"
+   "            raise RuntimeError(\"effect operation prohibited: \" + name + \".\" + op)\n"
+   "        scope = entry.get(\"scope\")\n"
+   "        if scope:\n"
+   "            write_ops = (\"write\", \"update\", \"create\", \"delete\", \"save\", \"insert\", \"put\", \"remove\", \"set\", \"push\", \"clear\", \"drop\", \"mutate\", \"add\")\n"
+   "            read_ops = (\"query\", \"fetch\", \"get\", \"read\", \"find\", \"filter\", \"all\", \"select\", \"search\", \"list\", \"exists\", \"load\", \"peek\", \"count\")\n"
+   "            if scope.startswith(\"reads=\") and op in write_ops:\n"
+   "                raise RuntimeError(\"effect scope violation: \" + name + \".\" + op + \" outside \" + scope)\n"
+   "            if scope.startswith(\"writes=\") and op in read_ops:\n"
+   "                raise RuntimeError(\"effect scope violation: \" + name + \".\" + op + \" outside \" + scope)\n"
+   "        performed = ctx[\"performed\"]\n"
+   "        performed.setdefault(name, {\"any\": 0})\n"
+   "        if entry.get(\"max\") is not None and performed[name][\"any\"] >= entry[\"max\"]:\n"
+   "            raise RuntimeError(\"effect budget exceeded: \" + name)\n"
+   "        performed[name][\"any\"] += 1\n"
+   "        performed[name][op] = performed[name].get(op, 0) + 1\n"
+   "    return thunk()\n"
+   "def __perform(name, op, args, thunk):\n"
+   "    handler = __current_handler(name)\n"
+   "    if handler is not None:\n"
+   "        def resume():\n"
+   "            return __perform_checked(name, op, thunk)\n"
+   "        return handler(op, args, resume)\n"
+   "    return __perform_checked(name, op, thunk)\n"
+   "def __handle(name, handler, fn):\n"
+   "    __handlers_stack.append({\"name\": name, \"handler\": handler})\n"
+   "    try:\n"
+   "        return fn()\n"
+   "    finally:\n"
+   "        __handlers_stack.pop()\n"
+   "def __withEffects(row):\n"
    "    _valid_modalities = (\"may\", \"must\", \"must-not\")\n"
    "    for _name, _entry in row.items():\n"
    "        _modality = _entry.get(\"modality\", \"may\")\n"
@@ -234,21 +295,74 @@
    "        _budget = _entry.get(\"max\")\n"
    "        if _budget is not None and (not isinstance(_budget, int) or _budget < 0):\n"
    "            raise ValueError(\"invalid effect budget: %r\" % (_budget,))\n"
+   "    def _check(frame):\n"
+   "        for _k, _entry in row.items():\n"
+   "            if _entry.get(\"modality\", \"may\") == \"must\":\n"
+   "                _perf = frame[\"performed\"].get(_k)\n"
+   "                _ops = _entry.get(\"ops\", [])\n"
+   "                if _ops:\n"
+   "                    for _op in _ops:\n"
+   "                        if not _perf or not (_perf.get(_op, 0) > 0):\n"
+   "                            raise RuntimeError(\"effect obligation unmet: \" + _k + \".\" + _op)\n"
+   "                elif not _perf or not (_perf.get(\"any\", 0) > 0):\n"
+   "                    raise RuntimeError(\"effect obligation unmet: \" + _k)\n"
    "    def _decorator(func):\n"
-   "        func.__effects__ = row\n"
-   "        return func\n"
+   "        if inspect.iscoroutinefunction(func):\n"
+   "            async def wrapped(*args, **kwargs):\n"
+   "                _frame = {\"row\": row, \"performed\": {}}\n"
+   "                __effects_stack.append(_frame)\n"
+   "                try:\n"
+   "                    _result = await func(*args, **kwargs)\n"
+   "                    _check(_frame)\n"
+   "                    return _result\n"
+   "                finally:\n"
+   "                    __effects_stack.pop()\n"
+   "        else:\n"
+   "            def wrapped(*args, **kwargs):\n"
+   "                _frame = {\"row\": row, \"performed\": {}}\n"
+   "                __effects_stack.append(_frame)\n"
+   "                try:\n"
+   "                    _result = func(*args, **kwargs)\n"
+   "                    _check(_frame)\n"
+   "                    return _result\n"
+   "                finally:\n"
+   "                    __effects_stack.pop()\n"
+   "        wrapped.__effects__ = row\n"
+   "        return wrapped\n"
    "    return _decorator"))
+
+;; A call to the runtime handler installer `__handle(name, handler, fn)`: it
+;; needs the preamble even when no direct effect call is visible in the program.
+(define (handler-call? n)
+  (and (uir-call? n)
+       (let ([c (uir-call-callee n)])
+         (cond
+           [(uir-symbol? c) (string=? (uir-symbol-name c) "__handle")]
+           [(uir-var? c) (string=? (uir-symbol-name (uir-var-name c)) "__handle")]
+           [else #f]))))
 
 (define (program-has-effects? uir)
   (cond
     [(struct? uir)
-     (or (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
+     (or (handler-call? uir)
+         (and (uir-call? uir)
+              (direct-effect-of-callee (uir-call-callee uir)))
+         (and (uir-fn? uir) (uir-effect-row? (uir-fn-effects uir)))
          (for/or ([f (in-list (cdr (vector->list (struct->vector uir))))])
            (program-has-effects? f)))]
     [(pair? uir) (or (program-has-effects? (car uir)) (program-has-effects? (cdr uir)))]
     [else #f]))
 
-(define (emit-funcdef uir indent)
+;; The JS/TS async-fn wrapper: (call "async-fn" (list fn)). Python async defs
+;; lower to the same shape so inference and the emitters share one convention.
+(define (async-fn-call? n)
+  (and (uir-call? n)
+       (uir-symbol? (uir-call-callee n))
+       (string=? (uir-symbol-name (uir-call-callee n)) "async-fn")
+       (= (length (uir-call-args n)) 1)
+       (uir-fn? (first (uir-call-args n)))))
+
+(define (emit-funcdef uir indent [async? #f])
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-fn-name uir))
   (define name-str (if name (uir-symbol-name name) "???"))
@@ -273,15 +387,15 @@
         ""))
   (string-append
    guard-prefix
-   spc "def " name-str "(" params-str ")" return-str ":\n"
+   spc (if async? "async def " "def ") name-str "(" params-str ")" return-str ":\n"
    (emit-body (uir-fn-body uir) (+ indent 1))))
 
 (define (emit-classdef uir indent)
   (define spc (make-string (* indent 4) #\space))
   (define name (uir-symbol-name (uir-class-name uir)))
-  (define super (uir-class-super uir))
+  (define supers (uir-class-super uir))
   (define super-str
-    (if (uir-null? super) "" (string-append "(" (emit-expr super) ")")))
+    (if (null? supers) "" (string-append "(" (string-join (map emit-expr supers) ", ") ")")))
   (define fields (uir-class-fields uir))
   (define methods (uir-class-methods uir))
   (define indent1 (+ indent 1))
@@ -375,6 +489,12 @@
 
 (define (emit-decorated uir indent)
   (define spc (make-string (* indent 4) #\space))
+  ;; The `@effects({...})` decorator is a static annotation, not a runtime
+  ;; decorator: its row is carried in the inner fn's effects field and rendered
+  ;; as `@__withEffects(...)`. Emitting it would evaluate the undefined
+  ;; `effects` name at import time.
+  (define decos (filter (λ (d) (not (effects-decorator? d)))
+                        (uir-decorated-decorators uir)))
   (define deco-lines
     (string-join
      (map (lambda (d)
@@ -382,16 +502,29 @@
             (if (null? (uir-call-args d))
                 (string-append spc "@" (emit-expr (uir-call-callee d)))
                 (string-append spc "@" (emit-expr d))))
-          (uir-decorated-decorators uir))
+          decos)
      "\n"))
   (define inner-str
     (let ([inner (uir-decorated-inner uir)])
       (cond [(uir-fn? inner) (emit-funcdef inner indent)]
+            [(async-fn-call? inner)
+             (emit-funcdef (first (uir-call-args inner)) indent #t)]
             [(uir-class? inner) (emit-classdef inner indent)]
             [else (emit-stmt inner indent)])))
   (string-append deco-lines "\n" inner-str))
 
 ;; ── Expression emitter ─────────────────────────────────────────────
+
+;; Render one call argument, special-casing the (call "kwarg" (list name value))
+;; keyword-argument encoding produced by lower-argument.
+(define (emit-arg a)
+  (if (and (uir-call? a)
+           (uir-symbol? (uir-call-callee a))
+           (equal? (uir-symbol-name (uir-call-callee a)) "kwarg")
+           (= (length (uir-call-args a)) 2))
+      (string-append (emit-expr (first (uir-call-args a)))
+                     "=" (emit-expr (second (uir-call-args a))))
+      (emit-expr a)))
 
 (define (emit-expr uir)
   (cond [(uir-null? uir) "None"]
@@ -431,8 +564,13 @@
                         [(and name (= (length args) 1) (equal? name "not"))
                          (string-append "not " (emit-expr (first args)))]
                         [else
-                         (string-append (emit-expr callee)
-                                        "(" (string-join (map emit-expr args) ", ") ")")]))))]
+                         (let* ([args-str (string-join (map emit-arg args) ", ")]
+                                [call-str (string-append (emit-expr callee)
+                                                         "(" args-str ")")]
+                                [eff (direct-effect-of-callee callee)])
+                           (if eff
+                               (emit-perform eff (effect-op-of-callee callee) args-str call-str)
+                               call-str))]))))]
         [(uir-let? uir)
          (string-append "(" (uir-symbol-name (uir-let-name uir))
                         " := " (emit-expr (uir-let-value uir))
@@ -535,11 +673,12 @@
 ;; ── Top-level ──────────────────────────────────────────────────────
 
 (define (emit-python uir)
+  (define annotated (annotate-effects uir))
   (define body
-    (cond [(uir-block? uir)
-           (emit-body uir 0)]
-          [else (emit-stmt uir 0)]))
-  (if (program-has-effects? uir)
+    (cond [(uir-block? annotated)
+           (emit-body annotated 0)]
+          [else (emit-stmt annotated 0)]))
+  (if (program-has-effects? annotated)
       (string-append (effects-guard-preamble) "\n\n" body)
       body))
 

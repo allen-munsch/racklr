@@ -6,6 +6,7 @@
 (provide extract-option
          load-lexer-grammar-rules
          lexer-has-newline-rule?
+         lexer-rule-hidden?
          collect-parser-literals
          build-implicit-lexer-rules
          build-mode-map
@@ -34,6 +35,18 @@
   (for/or ([r lexer-rules])
     (and (eq? (any-tree-tag r) 'lexer-rule)
          (string=? (any-tree-text (first (any-tree-children r))) "NEWLINE"))))
+
+;; Is this lexer rule hidden from the parser (channel(HIDDEN) / channel(1))?
+;; With comment preservation these tokens are emitted (not skipped) so they can
+;; be inspected, then filtered out of the token list the parser matches.
+(define (lexer-rule-hidden? rule)
+  (define children (any-tree-children rule))
+  (and (> (length children) 2)
+       (for/or ([cmd (drop children 2)])
+         (define txt (any-tree-text cmd))
+         (and (string-prefix? txt "channel(")
+              (let ([ch (substring txt 8 (sub1 (string-length txt)))])
+                (or (string=? ch "HIDDEN") (string=? ch "1")))))))
 ;; ── Implicit Lexer Rules for Parser Literals ─────────────────────
 ;; In ANTLR4, string literals like '{' or 'true' used directly in parser
 ;; rules are implicitly tokenized. We extract them and generate lexer rules.
@@ -128,6 +141,15 @@
     (emit (token 'INDENT indent-ws dummy-pos dummy-pos)))
   (define (emit-dedent)
     (emit (token 'DEDENT \"\" dummy-pos dummy-pos)))
+  ;; Collapse a leading run of consecutive NEWLINE tokens. Blank and
+  ;; comment-only lines each contribute a spurious NEWLINE; only the run's
+  ;; final NEWLINE carries the next real line's indentation. Returns the
+  ;; final NEWLINE and the remaining tokens after the run.
+  (define (skip-newlines toks)
+    (let nl-loop ([prev (car toks)] [rest (cdr toks)])
+      (if (and (pair? rest) (eq? (token-type (car rest)) 'NEWLINE))
+          (nl-loop (car rest) (cdr rest))
+          (values prev rest))))
 
   (let loop ([remaining raw-tokens])
     (if (null? remaining)
@@ -154,29 +176,36 @@
              (set! opened (max 0 (- opened 1)))
              (emit t)
              (loop rest)]
-            [(and (eq? type 'NEWLINE) (= opened 0))
-             (define-values (nl-str indent-ws) (split-newline-value value))
-             (define indent (compute-indent indent-ws))
-             (define current-top (car indent-stack))
-             (emit (token 'NEWLINE nl-str (token-start t) (token-end t)))
-             (cond
-               [(> indent current-top)
-                (set! indent-stack (cons indent indent-stack))
-                (emit-indent indent-ws)]
-               [(< indent current-top)
-                (let pop-loop ()
-                  (when (and (pair? indent-stack) (> (car indent-stack) indent))
-                    (set! indent-stack (cdr indent-stack))
-                    (emit-dedent)
-                    (pop-loop)))
-                (when (or (null? indent-stack) (not (= (car indent-stack) indent)))
-                  (error 'insert-indents
-                         \"unindent does not match any outer indentation level\"))]
-               [else (void)])
-             (loop rest)]
+            [(eq? type 'NEWLINE)
+             ;; Inside an open bracket a NEWLINE is Python implicit line
+             ;; joining: drop it entirely. At depth 0, collapse any run of
+             ;; consecutive NEWLINEs to the last one (blank/comment-only
+             ;; lines) and process that line's indentation.
+             (if (= opened 0)
+                 (let*-values ([(nl rest-after-run) (skip-newlines remaining)]
+                               [(nl-str indent-ws) (split-newline-value (token-value nl))])
+                   (let ([indent (compute-indent indent-ws)]
+                         [current-top (car indent-stack)])
+                     (emit (token 'NEWLINE nl-str (token-start nl) (token-end nl)))
+                     (cond
+                       [(> indent current-top)
+                        (set! indent-stack (cons indent indent-stack))
+                        (emit-indent indent-ws)]
+                       [(< indent current-top)
+                        (let pop-loop ()
+                          (when (and (pair? indent-stack) (> (car indent-stack) indent))
+                            (set! indent-stack (cdr indent-stack))
+                            (emit-dedent)
+                            (pop-loop)))
+                        (when (or (null? indent-stack) (not (= (car indent-stack) indent)))
+                          (error 'insert-indents
+                                 \"unindent does not match any outer indentation level\"))]
+                       [else (void)])
+                     (loop rest-after-run)))
+                 (loop rest))]
             [else
-             (emit t)
-             (loop rest)])))))
+              (emit t)
+              (loop rest)])))))
 ")
 
 ;; Mangle a string into a valid Racket identifier
@@ -285,79 +314,92 @@
   (define sl (string-length s))
   (if (and (<= (+ p sl) (string-length in))
            (string=? (substring in p (+ p sl)) s))
-      (list (list (+ p sl) s))
+      (list (+ p sl))
       '()))
 
 (define (mrange lo hi p in)
   (if (>= p (string-length in)) '()
       (let ([c (string-ref in p)])
-        (if (char<=? lo c hi) (list (list (+ p 1) (string c))) '()))))
+        (if (char<=? lo c hi) (list (+ p 1)) '()))))
 
 (define (mcclass pat p in)
   (if (>= p (string-length in)) '()
       (let ([c (string-ref in p)])
-        (if (cc-match c pat) (list (list (+ p 1) (string c))) '()))))
+        (if (cc-match c pat) (list (+ p 1)) '()))))
 
 (define (mstar f p in)
-  (let loop ([pp p] [a \"\"])
+  (let loop ([pp p])
     (let ([rs (f pp in)])
       (if (null? rs)
-          (list (list pp a))
-          (append (append-map (lambda (r) (loop (car r) (string-append a (cadr r)))) rs)
-                  (list (list pp a)))))))
+          (list pp)
+          (append (append-map (lambda (r) (loop r)) rs)
+                  (list pp))))))
 
 (define (mstar-ng f p in)
-  (let loop ([pp p] [a \"\"])
+  (let loop ([pp p])
     (let ([rs (f pp in)])
-      (cons (list pp a)
+      (cons pp
             (if (null? rs)
                 '()
-                (append-map (lambda (r) (loop (car r) (string-append a (cadr r)))) rs))))))
+                (append-map (lambda (r) (loop r)) rs))))))
 
 (define (mplus f p in)
   (let ([rs (f p in)])
     (if (null? rs) '()
-        (append-map (lambda (r)
-                      (map (lambda (m) (list (car m) (string-append (cadr r) (cadr m))))
-                           (mstar f (car r) in)))
-                    rs))))
+        (append-map (lambda (r) (mstar f r in)) rs))))
 
 (define (mplus-ng f p in)
   (let ([rs (f p in)])
     (if (null? rs) '()
-        (append-map (lambda (r)
-                      (map (lambda (m) (list (car m) (string-append (cadr r) (cadr m))))
-                           (mstar-ng f (car r) in)))
-                    rs))))
+        (append-map (lambda (r) (mstar-ng f r in)) rs))))
 
 (define (mopt f p in)
   (let ([rs (f p in)])
-    (if (null? rs) (list (list p \"\"))
-        (append rs (list (list p \"\"))))))
+    (if (null? rs) (list p)
+        (append rs (list p)))))
 
 (define (mopt-ng f p in)
   (let ([rs (f p in)])
-    (if (null? rs) (list (list p \"\"))
-        (cons (list p \"\") rs))))
+    (if (null? rs) (list p)
+        (cons p rs))))
 
 (define (mnot f p in)
   (if (>= p (string-length in)) '()
       (let ([rs (f p in)])
-        (if (null? rs) (list (list (+ p 1) (string (string-ref in p)))) '()))))
+        (if (null? rs) (list (+ p 1)) '()))))
 
 (define (malt fs p in)
-  (let loop ([xs fs])
-    (if (null? xs) '()
-        (let ([rs ((car xs) p in)])
-          (if (null? rs) (loop (cdr xs)) rs)))))
+  ;; Maximal munch across alternatives: order each alternative's results by
+  ;; its preferred (first) match length, longest first, ties to the earlier
+  ;; alternative. Each alternative's internal order is preserved (greedy =
+  ;; longest first, non-greedy = shortest first), so a non-greedy loop like
+  ;; LONG_STRING_ITEM*? keeps its shortest-match preference while a longer
+  ;; alternative still wins over a shorter one. A first-match malt blocked the
+  ;; longer [rR][fF] prefix behind [rR] and POINT_FLOAT behind INT_PART
+  ;; (1.5e10); a flat union re-ordered non-greedy results so the longest —
+  ;; not the preferred shortest — match won.
+  (define indexed
+    (for/list ([f fs] [i (in-naturals)])
+      (cons i (f p in))))
+  (define sorted
+    (sort indexed
+          (lambda (a b)
+            (define ra (cdr a)) (define rb (cdr b))
+            (cond [(null? ra) (and (null? rb) (< (car a) (car b)))]
+                  [(null? rb) #t]
+                  [else (let ([pa (car ra)] [pb (car rb)])
+                          (if (= pa pb)
+                              (< (car a) (car b))
+                              (> pa pb)))]))))
+  (append-map cdr sorted))
 
 (define (mseq fs p in)
-  (let loop ([xs fs] [acc (list (list p \"\"))])
+  (let loop ([xs fs] [acc (list p)])
     (if (null? xs) acc
         (loop (cdr xs)
-              (for*/list ([m (in-list acc)]
-                          [r (in-list ((car xs) (car m) in))])
-                (list (car r) (string-append (cadr m) (cadr r))))))))
+              (for*/list ([pos (in-list acc)]
+                          [r (in-list ((car xs) pos in))])
+                r)))))
 
 (define (cc-match c pat)
    (define pl (string-length pat))
@@ -449,7 +491,7 @@
     [(eq? tag 'token-ref)
       (define ref-name (any-tree-text elem))
       (if (string=? ref-name "EOF")
-          "(lambda (p i) (if (>= p (string-length i)) (list (list p \"EOF\")) '()))"
+          "(lambda (p i) (if (>= p (string-length i)) (list p) '()))"
           (format "~a-match" (mangle ref-name)))]
     [(eq? tag 'star)    (format "(lambda (p i) (mstar ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
     [(eq? tag 'plus)    (format "(lambda (p i) (mplus ~a p i))" (gen-match-elem (first (any-tree-children elem))))]
@@ -467,7 +509,7 @@
     [(eq? tag 'group)
       (define sub-alts (any-tree-children elem))
       (format "(lambda (p i) ~a)" (gen-match-alt sub-alts))]
-    [(eq? tag 'action) (format "(lambda (p i) (list (list p \"\")))")] ;; action/predicate matches empty
+    [(eq? tag 'action) (format "(lambda (p i) (list p))")] ;; action/predicate matches empty
     [(eq? tag 'any) (format "(lambda (p i) (mnot (lambda (p2 i2) '()) p i))")] ;; . matches any char
     [else (error "unknown match elem tag:" tag)]))
 
@@ -481,11 +523,13 @@
   (cons (cons 'default (append lexer-rules implicit-rules))
         mode-entries))
 
-(define (gen-tokenizer mode-map #:has-newline? [has-newline? #f] #:indent-tokens? [indent-tokens? #f])
+(define (gen-tokenizer mode-map #:has-newline? [has-newline? #f] #:indent-tokens? [indent-tokens? #f]
+                       #:preserve-comments? [preserve-comments? #f]
+                       #:hidden-names [hidden-names '()])
   (define mode-clauses
     (string-join
      (for/list ([(mode-name rules) (in-dict mode-map)])
-       (gen-mode-section mode-name rules))
+       (gen-mode-section mode-name rules preserve-comments?))
      "\n"))
   (define whitespace-handler
     (if has-newline?
@@ -513,31 +557,37 @@
    whitespace-handler
    mode-clauses
    "\n            [else (error 'tokenize \"unexpected char ~a in mode ~a at ~a:~a\" ch mode l c)])))))"
-   (if indent-tokens?
-       "\n(define (tokenize in) (insert-indents (tokenize-raw in)))"
-       "")
-   "\n"))
+    (if indent-tokens?
+        "\n(define (tokenize in) (insert-indents (tokenize-raw in)))"
+        "")
+    (if preserve-comments?
+        (format "\n(define hidden-token-types (list ~a))\n(define (hidden-token? t) (member (token-type t) hidden-token-types))"
+                (string-join
+                 (map (λ (n) (format "(string->symbol ~s)" n)) hidden-names)
+                 " "))
+        "")
+    "\n"))
 
-(define (gen-mode-section mode-name rules)
+(define (gen-mode-section mode-name rules preserve-comments?)
   ;; Generate a longest-match loop: try all matchers at position p,
   ;; pick the one that advances furthest. If tie, first defined wins.
   ;; This implements ANTLR4's maximal munch lexer strategy.
   (define clauses-str
-    (string-join (map gen-token-clause rules) "\n"))
+    (string-join (map (λ (rule) (gen-token-clause rule preserve-comments?)) rules) "\n"))
   (string-append
    (format "            [(eq? mode '~a)\n             (let __mloop ([__rules (list\n" mode-name)
    clauses-str
-   ")]\n                                      [__best-np p] [__best-v #f] [__best-handle #f])\n"
-   "               (if (null? __rules)\n"
-   "                   (if __best-handle\n"
-   "                       (__best-handle __best-np __best-v)\n"
-    (format "                       (error 'tokenize \"no matching rule in mode ~a at ~~a:~~a\" l c))\n" mode-name)
-    "                   (let ([__r ((caar __rules) p in)])\n"
-    "                     (if (and (pair? __r) (> (caar __r) __best-np))\n"
-    "                         (__mloop (cdr __rules) (caar __r) (cadar __r) (cdar __rules))\n"
-     "                         (__mloop (cdr __rules) __best-np __best-v __best-handle)))))]"))
+    ")]\n                                      [__best-np p] [__best-handle #f])\n"
+    "               (if (null? __rules)\n"
+    "                   (if __best-handle\n"
+    "                       (__best-handle __best-np (substring in p __best-np))\n"
+     (format "                       (error 'tokenize \"no matching rule in mode ~a at ~~a:~~a\" l c))\n" mode-name)
+   "                   (let ([__r ((caar __rules) p in)])\n"
+   "                     (if (and (pair? __r) (> (car __r) __best-np))\n"
+   "                         (__mloop (cdr __rules) (car __r) (cdar __rules))\n"
+   "                         (__mloop (cdr __rules) __best-np __best-handle)))))]"))
 
-(define (gen-token-clause rule)
+(define (gen-token-clause rule preserve-comments?)
   (define children (any-tree-children rule))
   (define raw-name (any-tree-text (first children)))
   (define mangled (mangle raw-name))
@@ -549,11 +599,11 @@
     (if (regexp-match? #rx"^[a-zA-Z_][a-zA-Z0-9_]*$" raw-name)
         (format "'~a" raw-name)
         (format "(string->symbol ~s)" raw-name)))
-  (define cmd-body (gen-command-body commands token-expr raw-name))
+  (define cmd-body (gen-command-body commands token-expr raw-name preserve-comments?))
   (format "               (cons ~a-match (lambda (np v) ~a))"
           mangled cmd-body))
 
-(define (gen-command-body commands token-expr raw-name)
+(define (gen-command-body commands token-expr raw-name preserve-comments?)
   (define inner-body
     (if (null? commands)
         (format "(define sl (string-length v)) (define tk (token ~a v (pos l c o) (pos l (+ c sl) (+ o sl)))) (loop np l (+ c sl) (+ o sl) (cons tk tks) ~a ~a ~a)" token-expr "mode" "mstack" "pending")
@@ -575,10 +625,13 @@
                        (loop (cdr cmds) #t more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "channel(")
                      ;; channel(HIDDEN) (== channel(1)) tokens are invisible to the
-                     ;; parser; we have no channels, so treat them like `skip`.
+                     ;; parser. By default we have no channels, so treat them like
+                     ;; `skip`. With comment preservation they are emitted (so the
+                     ;; caller can inspect them) and filtered out at parse time.
                      (define ch (substring txt 8 (sub1 (string-length txt))))
                      (define hidden? (or (string=? ch "HIDDEN") (string=? ch "1")))
-                     (loop (cdr cmds) (or skip? hidden?) more? emit-type next-mode next-mstack next-pending)]
+                     (define skip-token? (and hidden? (not preserve-comments?)))
+                     (loop (cdr cmds) (or skip? skip-token?) more? emit-type next-mode next-mstack next-pending)]
                     [(string-prefix? txt "pushMode(")
                      (define raw-mname (substring txt 9 (sub1 (string-length txt))))
                      (define mname (if (string=? raw-mname "DEFAULT_MODE") "default" raw-mname))

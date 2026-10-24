@@ -29,6 +29,19 @@
          (if (and (= (length kids) 1) (member (any-tree-tag (first kids)) '(test or_test and_test not_test comparison expr atom_expr)))
              (lower-expr (first kids) tk-type tk-value)
              (uir-symbol "?test")))]
+    [(eq? tag 'namedexpr_test)
+     ;; Walrus assignment expression: test ':=' test
+     (cond
+       [(= (length kids) 2)
+        (let* ([lhs (lower-expr (first kids) tk-type tk-value)]
+               [second (second kids)]
+               [rhs (cond [(and (cst-node? second) (eq? (any-tree-tag second) 'group))
+                           (let ([gk (node-children second)])
+                             (if (pair? gk) (lower-expr (first gk) tk-type tk-value) (uir-null)))]
+                          [else (lower-expr second tk-type tk-value)])])
+          (uir-set! lhs rhs))]
+       [(= (length kids) 1) (lower-expr (first kids) tk-type tk-value)]
+       [else (uir-symbol "?namedexpr_test")])]
     [(eq? tag 'comparison) (lower-comparison u tk-type tk-value)]
     [(eq? tag 'expr) (lower-binop u tk-type tk-value)]
     [(eq? tag 'or_test) (lower-binop u tk-type tk-value)]    ;; 'or' operator
@@ -37,6 +50,11 @@
     [(eq? tag 'atom_expr) (lower-atom-expr u tk-type tk-value)]
     [(eq? tag 'atom) (lower-atom u tk-type tk-value)]
     [(eq? tag 'name) (lower-name u tk-type tk-value)]
+    [(eq? tag 'star_expr)
+     ;; star_expr: '*' expr — unpacking target or splat argument
+     (if (null? kids)
+         (uir-symbol "?star_expr")
+         (uir-spread (lower-expr (first kids) tk-type tk-value)))]
     [(eq? tag 'number) (uir-number (first (cst-tokens u tk-type tk-value)))]
     [(eq? tag 'lambdef) (lower-lambdef u tk-type tk-value)]
     [(eq? tag 'group) (if (null? kids) (uir-null) (lower-expr (first kids) tk-type tk-value))]
@@ -71,45 +89,49 @@
                          (lower-expr (first kids) tk-type tk-value)
                          (uir-null))))))
 
-;; Handle comparison: expr (comparison_op expr)*
+;; Operator symbol for an op node: a raw token (`|`, `**` from the left-recursive
+;; `expr` alternatives), a comp_op node (possibly two tokens: "not in", "is not"),
+;; or a group wrapping the operator token.
+(define (op-symbol op-node tk-type tk-value)
+  (cond
+    [(token-like? op-node tk-type) (tk-value op-node)]
+    [(cst-node? op-node)
+     (let ([toks (cst-tokens op-node tk-type tk-value)])
+       (if (pair? toks)
+           (string-join (map second toks) " ")
+           "?op"))]
+    [else "?op"]))
+
+;; Collect (op . right) pairs from the children after the first operand of an
+;; operator chain. Three generated-parser shapes occur:
+;;   1. a direct group node (op expr) followed by the next expr   [a + b * c]
+;;   2. a list of group nodes, each (op expr)                     [a < b < c]
+;;   3. a raw operator token between two expr nodes               [1 | 2, 2 ** 3]
+(define (collect-op-pairs remaining tk-type)
+  (define (list-item-pair item)
+    (and (cst-node? item)
+         (let ([gk (node-children item)])
+           (cond [(>= (length gk) 2) (cons (first gk) (second gk))]
+                 [(= (length gk) 1) (cons item (first gk))]
+                 [else #f]))))
+  (cond
+    [(null? remaining) '()]
+    [else
+     (let ([c (car remaining)])
+       (cond
+         [(and (token-like? c tk-type) (pair? (cdr remaining)) (cst-node? (cadr remaining)))
+          (cons (cons c (cadr remaining)) (collect-op-pairs (cddr remaining) tk-type))]
+         [(and (list? c) (pair? c))
+          (append (filter pair? (map list-item-pair c))
+                  (collect-op-pairs (cdr remaining) tk-type))]
+         [(and (cst-node? c) (pair? (cdr remaining)) (cst-node? (cadr remaining)))
+          (cons (cons c (cadr remaining)) (collect-op-pairs (cddr remaining) tk-type))]
+         [else (collect-op-pairs (cdr remaining) tk-type)]))]))
+
+;; Handle comparison: expr (comp_op expr)*
 (define (lower-comparison cst tk-type tk-value)
-  ;; Extract op-right pairs from both direct nodes and list-wrapped pairs
-  (define pairs
-    (let loop ([remaining (cdr (any-tree-children cst))])
-      (if (null? remaining)
-          '()
-          (let ([c (car remaining)])
-            (cond [(cst-node? c)
-                   ;; Direct node - expect pair: op then right
-                   (let ([rest (cdr remaining)])
-                     (if (and (pair? rest) (cst-node? (car rest)))
-                         (cons (list c (car rest)) (loop (cdr rest)))
-                         (loop (cdr remaining))))]
-                  [(and (list? c) (pair? c))
-                   ;; List-wrapped: could be (group) with [token, expr] or [comp_op, expr]
-                   (cond [(and (null? (cdr c)) (cst-node? (car c))
-                               (eq? (any-tree-tag (car c)) 'group))
-                          ;; (group) wrapping something — check all children
-                          (let* ([g (car c)]
-                                 [raw (any-tree-children g)]
-                                 [gk (node-children g)])
-                            (cond [(and (>= (length gk) 2) (cst-node? (first gk)))
-                                   ;; [comp_op, expr] pair
-                                   (cons (list (first gk) (second gk))
-                                         (loop (cdr remaining)))]
-                                  [(= (length gk) 1)
-                                   ;; single CST-node child (the right operand)
-                                   ;; The operator is a raw token in raw children
-                                   (let ([right (first gk)])
-                                     (cons (list g right)  ;; use group as op-node (has the token)
-                                           (loop (cdr remaining))))]
-                                  [else (loop (cdr remaining))]))]
-                         [(and (pair? (cdr c)) (cst-node? (car c)) (cst-node? (cadr c)))
-                          ;; (group, expr) pair
-                          (cons (list (car c) (cadr c)) (loop (cdr remaining)))]
-                         [else (loop (cdr remaining))])]
-                  [else (loop (cdr remaining))])))))
   (define kids (node-children cst))
+  (define pairs (collect-op-pairs (cdr (any-tree-children cst)) tk-type))
   (if (null? pairs)
       (if (= (length kids) 1)
           (lower-expr (first kids) tk-type tk-value)
@@ -118,47 +140,15 @@
                  [acc (if (pair? kids) (lower-expr (first kids) tk-type tk-value) (uir-null))])
         (if (null? pairs)
             acc
-            (let* ([p (car pairs)]
-                   [op-node (car p)]
-                   [right (cadr p)]
-                   [op-tok (cst-tokens op-node tk-type tk-value)])
+            (let ([p (car pairs)])
               (fold (cdr pairs)
-                    (uir-call (uir-symbol (if (pair? op-tok) (second (car op-tok)) "?op"))
-                              (list acc (lower-expr right tk-type tk-value)))))))))
+                    (uir-call (uir-symbol (op-symbol (car p) tk-type tk-value))
+                              (list acc (lower-expr (cdr p) tk-type tk-value)))))))))
 
 ;; Handle binary expressions: expr (binop expr)*
 (define (lower-binop cst tk-type tk-value)
-  ;; Extract op-right pairs from both direct nodes and list-wrapped pairs
-  (define pairs
-    (let loop ([remaining (cdr (any-tree-children cst))])
-      (if (null? remaining)
-          '()
-          (let ([c (car remaining)])
-            (cond [(cst-node? c)
-                   (let ([rest (cdr remaining)])
-                     (if (and (pair? rest) (cst-node? (car rest)))
-                         (cons (list c (car rest)) (loop (cdr rest)))
-                         (loop (cdr remaining))))]
-                  [(and (list? c) (pair? c))
-                   ;; List-wrapped: could be (group) with [token, expr] or [comp_op, expr]
-                   (cond [(and (null? (cdr c)) (cst-node? (car c))
-                               (eq? (any-tree-tag (car c)) 'group))
-                          (let* ([g (car c)]
-                                 [raw (any-tree-children g)]
-                                 [gk (node-children g)])
-                            (cond [(and (>= (length gk) 2) (cst-node? (first gk)))
-                                   (cons (list (first gk) (second gk))
-                                         (loop (cdr remaining)))]
-                                  [(= (length gk) 1)
-                                   (let ([right (first gk)])
-                                     (cons (list g right)
-                                           (loop (cdr remaining))))]
-                                  [else (loop (cdr remaining))]))]
-                         [(and (pair? (cdr c)) (cst-node? (car c)) (cst-node? (cadr c)))
-                          (cons (list (car c) (cadr c)) (loop (cdr remaining)))]
-                         [else (loop (cdr remaining))])]
-                  [else (loop (cdr remaining))])))))
   (define kids (node-children cst))
+  (define pairs (collect-op-pairs (cdr (any-tree-children cst)) tk-type))
   (if (null? pairs)
       (if (= (length kids) 1)
           (lower-expr (first kids) tk-type tk-value)
@@ -167,13 +157,10 @@
                  [acc (if (pair? kids) (lower-expr (first kids) tk-type tk-value) (uir-null))])
         (if (null? pairs)
             acc
-            (let* ([p (car pairs)]
-                   [op-node (car p)]
-                   [right (cadr p)]
-                   [op-tok (cst-tokens op-node tk-type tk-value)])
+            (let ([p (car pairs)])
               (fold (cdr pairs)
-                    (uir-call (uir-symbol (if (pair? op-tok) (second (car op-tok)) "?op"))
-                              (list acc (lower-expr right tk-type tk-value)))))))))
+                    (uir-call (uir-symbol (op-symbol (car p) tk-type tk-value))
+                              (list acc (lower-expr (cdr p) tk-type tk-value)))))))))
 
 ;; Handle atom_expr: trailer (attr access, call, subscript)
 (define (lower-atom-expr cst tk-type tk-value)
@@ -269,17 +256,48 @@
 ;; For multiple subscripts: return as uir-list (tuple)
 (define (lower-subscriptlist cst tk-type tk-value)
   (define sub-exprs
-    (map (lambda (sub)
-           (define sub-kids (node-children sub))
-           (if (null? sub-kids)
-               (uir-null)
-               (lower-expr (first sub-kids) tk-type tk-value)))
+    (map (lambda (sub) (lower-subscript sub tk-type tk-value))
          (find-subscripts cst)))
   (if (null? sub-exprs)
       (uir-null)
       (if (= (length sub-exprs) 1)
           (first sub-exprs)
           (uir-list sub-exprs))))
+
+;; Lower one subscript_ node: a plain index or a slice.
+;; subscript_ : test | test? ':' test? sliceop?
+;; A slice lowers to (call "slice" (list start stop step)) with uir-null for
+;; any missing bound, so `a[::-1]` and `a[1:2:3]` keep their full shape instead
+;; of collapsing to the first child (or an unknown ?sliceop symbol).
+(define (lower-subscript sub tk-type tk-value)
+  (define raw (any-tree-children sub))
+  (define (colon? x) (and (token-like? x tk-type) (eq? (tk-type x) 'COLON)))
+  (define sliceop-node
+    (for/or ([x raw]) (and (cst-node? x) (eq? (any-tree-tag x) 'sliceop) x)))
+  (define slice? (or sliceop-node (for/or ([x raw]) (colon? x))))
+  (if (not slice?)
+      (let ([kids (node-children sub)])
+        (if (null? kids)
+            (uir-null)
+            (lower-expr (first kids) tk-type tk-value)))
+      (let loop ([rest raw] [seg 0] [start #f] [stop #f] [step #f])
+        (cond
+          [(null? rest)
+           (uir-call (uir-symbol "slice")
+                     (list (or start (uir-null)) (or stop (uir-null)) (or step (uir-null))))]
+          [(colon? (car rest))
+           (loop (cdr rest) (add1 seg) start stop step)]
+          [(eq? (car rest) sliceop-node)
+           (let ([sk (node-children sliceop-node)])
+             (loop (cdr rest) (add1 seg) start stop
+                   (and (pair? sk) (lower-expr (first sk) tk-type tk-value))))]
+          [(cst-node? (car rest))
+           (define v (lower-expr (car rest) tk-type tk-value))
+           (cond [(= seg 0) (loop (cdr rest) seg v stop step)]
+                 [(= seg 1) (loop (cdr rest) seg start v step)]
+                 [(= seg 2) (loop (cdr rest) seg start stop v)]
+                 [else (loop (cdr rest) seg start stop step)])]
+          [else (loop (cdr rest) seg start stop step)]))))
 
 ;; Recursively find all subscript_ nodes (handles list-wrapping from commas)
 (define (find-subscripts node)
@@ -292,25 +310,67 @@
         [else '()]))
 
 (define (lower-arglist cst tk-type tk-value)
-  (define kids (node-children cst))
-  (filter-map (λ (k)
-                (let ([t (any-tree-tag k)])
-                  (cond [(eq? t 'argument) (lower-argument k tk-type tk-value)]
-                        [(eq? t 'group) (lower-group-expr k tk-type tk-value)]
-                        [else #f])))
-              kids))
+  ;; arglist : argument (',' argument)* ','?
+  ;; The generated parser emits the first argument directly and collects the
+  ;; (',' argument)* repetition into a LIST of group(COMMA, argument) nodes,
+  ;; so a plain node-children filter drops every argument after the first.
+  (define result '())
+  (let loop ([remaining (any-tree-children cst)])
+    (cond
+      [(null? remaining) (reverse result)]
+      [(and (list? (car remaining)) (pair? (car remaining)))
+       (loop (append (car remaining) (cdr remaining)))]
+      [(cst-node? (car remaining))
+       (define t (any-tree-tag (car remaining)))
+       (cond
+         [(eq? t 'argument)
+          (set! result (cons (lower-argument (car remaining) tk-type tk-value) result))
+          (loop (cdr remaining))]
+         [(eq? t 'group)
+          ;; comma wrapper group(COMMA, argument): lower its argument child
+          (define arg
+            (for/or ([k (any-tree-children (car remaining))])
+              (and (cst-node? k) (eq? (any-tree-tag k) 'argument) k)))
+          (set! result
+                (cons (if arg
+                          (lower-argument arg tk-type tk-value)
+                          (lower-group-expr (car remaining) tk-type tk-value))
+                      result))
+          (loop (cdr remaining))]
+         [else (loop (cdr remaining))])]
+      [else (loop (cdr remaining))])))
 
 (define (lower-argument cst tk-type tk-value)
+  ;; argument : test (comp_for)? | keyword '=' test | '**' test | '*' test
+  ;; A keyword argument (`a=1`) is the first kid being a `keyword` node and the
+  ;; second kid the value `test` (the `=` token is filtered out by
+  ;; node-children). Emit it as (call "kwarg" (list name value)) so the value
+  ;; is preserved for the type-graph search and emit round-trips.
   (define kids (node-children cst))
-  (if (null? kids)
-      (uir-null)
-      (lower-expr (first kids) tk-type tk-value)))
+  (cond
+    [(and (= (length kids) 2)
+          (eq? (any-tree-tag (first kids)) 'keyword)
+          (eq? (any-tree-tag (second kids)) 'test))
+     (uir-call (uir-symbol "kwarg")
+               (list (lower-name (first kids) tk-type tk-value)
+                     (lower-expr (second kids) tk-type tk-value)))]
+    [(null? kids)
+     (uir-null)]
+    [else
+     (lower-expr (first kids) tk-type tk-value)]))
 
 (define (lower-group-expr cst tk-type tk-value)
   (define kids (node-children cst))
   (if (null? kids)
       (uir-null)
       (lower-expr (first kids) tk-type tk-value)))
+
+;; Convert a Python integer-literal token value ("0xFF", "0o17", "0b1010",
+;; underscores allowed) into its decimal string form.
+(define (python-int->decimal s radix)
+  (define digits (regexp-replace* #rx"_" (substring s 2) ""))
+  (define n (string->number digits radix))
+  (if n (number->string n) s))
 
 ;; Handle atom: NAME | NUMBER | STRING+ | NONE | TRUE | FALSE | [] | {} | ()
 (define (lower-atom cst tk-type tk-value)
@@ -378,11 +438,16 @@
      (match (first (car all-toks))
        ['NUMBER (uir-number (second (car all-toks)))]
        ['FLOAT_NUMBER (uir-number (second (car all-toks)))]
-        ['STRING (lower-string-token (second (car all-toks)))]
-       ['TRUE (uir-bool #t)]
-       ['FALSE (uir-bool #f)]
-       ['NONE (uir-null)]
-       [_ (uir-symbol (format "?atom-~a" (first (car all-toks))))])]
+       ['HEX_INTEGER (uir-number (python-int->decimal (second (car all-toks)) 16))]
+       ['OCT_INTEGER (uir-number (python-int->decimal (second (car all-toks)) 8))]
+       ['BIN_INTEGER (uir-number (python-int->decimal (second (car all-toks)) 2))]
+       ['IMAG_NUMBER (uir-number (second (car all-toks)))]
+       ['STRING (lower-string-token (second (car all-toks)))]
+        ['TRUE (uir-bool #t)]
+        ['FALSE (uir-bool #f)]
+        ['NONE (uir-null)]
+        ['ELLIPSIS (uir-symbol "...")]
+        [_ (uir-symbol (format "?atom-~a" (first (car all-toks))))])]
     [else (uir-null)]))
 
 (define (lower-name cst tk-type tk-value)
@@ -414,7 +479,8 @@
 ;; Returns list of '(test node) and '(colon) markers in tree order
 (define (walk-collection node tk-type)
   (if (any-tree? node)
-      (if (eq? (any-tree-tag node) 'test)
+      (if (or (eq? (any-tree-tag node) 'test)
+              (eq? (any-tree-tag node) 'namedexpr_test))
           (list (list 'test node))
           (append-map (lambda (c)
                         (cond [(cst-node? c) (walk-collection c tk-type)]
@@ -489,7 +555,7 @@
     (for*/list ([c raw-kids] #:when (cst-node? c)
                 #:when (eq? (any-tree-tag c) 'exprlist)
                 [t (cst-tokens-deep c tk-type tk-value)]
-                #:when (eq? (first t) 'NAME))
+                #:when (member (first t) '(NAME UNDERSCORE MATCH CASE)))
       (second t)))
   (define loop-var (if (pair? var-names) (uir-symbol (car var-names)) (uir-symbol "?var")))
   (define iterable

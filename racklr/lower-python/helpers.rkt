@@ -52,7 +52,7 @@
 ;; Walk through single-child indirections: test → or_test → and_test → ...
 ;; Returns the first non-intermediate node (with a "real" tag)
 (define (unwrap-expr cst)
-  (define expr-tags '(test test_nocond testlist testlist_star_expr))
+  (define expr-tags '(test test_nocond testlist testlist_star_expr namedexpr_test))
   (if (member (any-tree-tag cst) expr-tags)
       (let ([kids (node-children cst)])
         (if (= (length kids) 1)

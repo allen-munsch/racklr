@@ -13,7 +13,8 @@
 (provide lower-expression-sequence
          lower-single-expression
          fn-body-lowerer
-         yield-stmt-lowerer)
+         yield-stmt-lowerer
+         fn-decl-lowerer)
 
 (define fn-body-lowerer
   (make-parameter (λ (node tk-type tk-value)
@@ -22,6 +23,10 @@
 (define yield-stmt-lowerer
   (make-parameter (λ (node tk-type tk-value)
                     (error "yield-stmt-lowerer not set — require lower-javascript/stmt.rkt"))))
+
+(define fn-decl-lowerer
+  (make-parameter (λ (node tk-type tk-value)
+                    (error "fn-decl-lowerer not set — require lower-javascript/stmt.rkt"))))
 
 ;; ── Expressions ──────────────────────────────────────────────────────
 
@@ -40,7 +45,14 @@
   (define kids (kids-of node))
   (define (unary-prefix? k0) (and (tok? k0 tk-type) (cst-node? (second kids))))
   (define (unary-postfix? k0 k1) (and (cst-node? k0) (tok? k1 tk-type)))
-  (cond [(= (length kids) 1)
+  (cond [(and (pair? kids)
+              (tok? (first kids) tk-type)
+              (eq? (tk-type (first kids)) 'Class))
+         ;; Class expression: Class (identifier)? classTail. The generated
+         ;; parser routes a top-level `class Foo {}` through expressionStatement
+         ;; rather than classDeclaration, so it lands here.
+         (lower-class-expr node tk-type tk-value)]
+        [(= (length kids) 1)
          (lower-expr-atom (first kids) tk-type tk-value)]
          [(= (length kids) 2)
           (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'Await))
@@ -118,6 +130,24 @@
                                  (list obj (lower-expression-sequence (list-ref kids 3) tk-type tk-value)))]
                       [else (uir-null)])])]
         [else (uir-null)]))
+
+;; Class expression: Class (identifier)? classTail. Anonymous classes
+;; (`class {}`) have no identifier child and get a placeholder name.
+(define (lower-class-expr node tk-type tk-value)
+  (define ident-node (find-kid node 'identifier))
+  (define class-name
+    (if ident-node
+        (uir-symbol (tk-value (first (kids-of ident-node))))
+        (uir-symbol "?")))
+  (define tail (find-kid node 'classTail))
+  (define super (uir-null))
+  (when tail
+    (define grp (find-kid tail 'group))
+    (when grp
+      (define se (find-kid grp 'singleExpression))
+      (when se
+        (set! super (lower-single-expression se tk-type tk-value)))))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() '()))
 
 (define (lower-expr-atom value tk-type tk-value)
   (cond [(cst-node? value)
@@ -340,11 +370,14 @@
   (uir-list (reverse items)))
 
 (define (lower-arrow-fn node tk-type tk-value)
-  ;; Distinguish: arrow has arrowFunctionParameters, function expr has Function_ token
-  (define arrow-params-node (find-kid node (quote arrowFunctionParameters)))
-  (if arrow-params-node
-      (lower-arrow-fn-impl node tk-type tk-value)
-      (lower-function-expr node tk-type tk-value)))
+  ;; The generated parser routes a statement-level `function foo() {}` through
+  ;; anonymousFunction → functionDeclaration (# NamedFunction), so a named
+  ;; function declaration reaches us here rather than through lower-statement.
+  (cond [(find-kid node 'functionDeclaration)
+         => (λ (fd) ((fn-decl-lowerer) fd tk-type tk-value))]
+        [(find-kid node 'arrowFunctionParameters)
+         (lower-arrow-fn-impl node tk-type tk-value)]
+        [else (lower-function-expr node tk-type tk-value)]))
 
 (define (lower-arrow-fn-impl node tk-type tk-value)
   (define params-node (find-kid node (quote arrowFunctionParameters)))

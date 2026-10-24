@@ -298,6 +298,26 @@ export { App };"
   (make-emit-pages-html ts-parse ts-tokenize ts-tok-type ts-tok-value
                         jsx-parse jsx-tokenize jsx-tok-type jsx-tok-value))
 
+;; ── JSDoc @effects through the production emit-pages pipeline ────────
+;; page->js must tokenize with comments preserved and pass those tokens to
+;; lower-program so a JSDoc @effects row attaches to the declaration that
+;; follows it, then emit-javascript renders the __withEffects guard.
+(define-values (ts-parse-c ts-tokenize-c ts-tok-type-c ts-tok-value-c)
+  (gen-and-load-comments "../grammars-v4/javascript/typescript-cleaned/TypeScriptParser.g4"))
+
+(define emit-pages-jsdoc
+  (make-emit-pages-html ts-parse-c ts-tokenize-c ts-tok-type-c ts-tok-value-c
+                        jsx-parse jsx-tokenize jsx-tok-type jsx-tok-value))
+
+(define jsdoc-html
+  (emit-pages-jsdoc
+   (hash "/" "/** @effects { llm: { max: 5 } } */\nfunction f() { return llm.query('hi'); }")
+   #:title "JSDoc"))
+
+(check-true (string-contains? jsdoc-html "__withEffects") "JSDoc: __withEffects guard emitted through emit-pages")
+(check-true (string-contains? jsdoc-html "\"llm\"") "JSDoc: effect name in emitted row")
+(check-true (string-contains? jsdoc-html "\"max\": 5") "JSDoc: budget in emitted row")
+
 ;; ── B66: _app.tsx / _document.tsx handling ───────────────────────────
 
 ;; B66a: _app.tsx wraps all pages via #:layout

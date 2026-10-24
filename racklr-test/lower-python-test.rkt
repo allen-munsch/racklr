@@ -78,6 +78,123 @@
   (check-true (uir-import? uir) "import lowers to uir-import")
   (check-equal? (uir-symbol-name (uir-import-source uir)) "os" "module name"))
 
+;; class docstring (a bare string-literal statement) must not lower to a "?" field.
+;; Uses parse-file_input because the single_input entry (py-parse) is broken for
+;; compound statements (see LOOP_PLAN issue #1).
+(let ([cst (py-parse-file-input "class A:\n    \"\"\"doc\"\"\"\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define klass (first (uir-block-stmts uir)))
+  (check-true (uir-class? klass) "docstring-only class lowers to uir-class")
+  (check-equal? (length (uir-class-fields klass)) 0 "docstring is not a field"))
+
+(let ([cst (py-parse-file-input "class A:\n    \"\"\"doc\"\"\"\n    x = 1\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define klass (first (uir-block-stmts uir)))
+  (check-equal? (length (uir-class-fields klass)) 1 "docstring + assignment lowers to one field")
+  (check-equal? (uir-symbol-name (uir-field-name (first (uir-class-fields klass)))) "x"
+                "the surviving field is x, not ?"))
+
+;; Class super extraction: the positional base lowers from a `namedexpr_test`
+;; (after the walrus rewiring of `argument`), not a bare `test`;
+;; find-super-node must still extract it into uir-class-super.
+(let ([cst (py-parse-file-input "class Foo(Bar):\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-block? uir) "file class lowers to uir-block")
+  (define klass (first (uir-block-stmts uir)))
+  (check-true (uir-class? klass) "class stmt lowers to uir-class")
+  (define sup (first (uir-class-super klass)))
+  (check-true (uir-var? sup) "super lowers to uir-var")
+  (check-equal? (uir-symbol-name (uir-var-name sup)) "Bar" "super name is Bar"))
+
+;; Multiple inheritance: every positional base is captured in left-to-right
+;; order; keyword (`metaclass=`) and star bases are skipped.
+(let ([cst (py-parse-file-input "class C(A, B, metaclass=M):\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define klass (first (uir-block-stmts uir)))
+  (define supers (uir-class-super klass))
+  (check-equal? (length supers) 2 "two positional bases captured")
+  (check-equal? (uir-symbol-name (uir-var-name (first supers))) "A" "first base is A")
+  (check-equal? (uir-symbol-name (uir-var-name (second supers))) "B" "second base is B"))
+
+;; Multiple bases round-trip through emit-python.
+(let ([cst (py-parse-file-input "class C(A, B):\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-equal? (emit-python uir) "class C(A, B):\n    pass" "multi-base emit"))
+
+;; ── Operators (left-recursive expr flattening) ────────────────────
+;; Uses py-parse-file-input so these run regardless of the single_input bug.
+
+;; `1 | 2` (raw OR_OP token between two expr nodes) lowers to a `|` call,
+;; not ?expr.
+(let ([cst (py-parse-file-input "1 | 2\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define call (first (uir-block-stmts uir)))
+  (check-true (uir-call? call) "bitwise-or lowers to uir-call")
+  (check-equal? (uir-symbol-name (uir-call-callee call)) "|" "op symbol is |"))
+
+;; `2 ** 3` (raw POWER token) lowers to a `**` call, not ?expr.
+(let ([cst (py-parse-file-input "2 ** 3\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define call (first (uir-block-stmts uir)))
+  (check-true (uir-call? call) "power lowers to uir-call")
+  (check-equal? (uir-symbol-name (uir-call-callee call)) "**" "op symbol is **"))
+
+;; Chained comparison `a < b < c` lowers to nested `<` calls, not ?comp_op/?op.
+(let ([cst (py-parse-file-input "a < b < c\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define call (first (uir-block-stmts uir)))
+  (check-true (uir-call? call) "chained comparison lowers to uir-call")
+  (check-equal? (uir-symbol-name (uir-call-callee call)) "<" "op symbol is <")
+  (check-equal? (length (uir-call-args call)) 2 "chained comparison has two args"))
+
+;; Union annotation `int | None` lowers to a `|` call, not ?expr.
+(let ([cst (py-parse-file-input "x: int | None = 1\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define ann (first (uir-block-stmts uir)))
+  (check-true (uir-ann-set!? ann) "annotated assignment lowers to uir-ann-set!")
+  (define ty (uir-ann-set!-type ann))
+  (check-true (uir-call? ty) "union annotation lowers to uir-call")
+  (check-equal? (uir-symbol-name (uir-call-callee ty)) "|" "union op symbol is |"))
+
+;; Soft keyword `match` (PEP 634) tokenizes as MATCH, not NAME, so it must
+;; still lower to a named loop/comprehension variable, not ?var.
+(let ([cst (py-parse-file-input "for match in matches:\n    pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define loop (first (uir-block-stmts uir)))
+  (check-true (uir-for-each? loop) "for match lowers to uir-for-each")
+  (check-equal? (uir-symbol-name (uir-for-each-var loop)) "match" "loop var is match"))
+
+(let ([cst (py-parse-file-input "xs = [match[1] for match in ms]\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define stmt (first (uir-block-stmts uir)))
+  (define comp (uir-set!-value stmt))
+  (check-true (uir-call? comp) "comprehension lowers to uir-call")
+  (check-equal? (uir-symbol-name (uir-call-callee comp)) "list-comp" "list-comp constructor")
+  (check-equal? (uir-symbol-name (list-ref (uir-call-args comp) 1)) "match"
+                "comprehension var is match"))
+
+;; `...` (ELLIPSIS token) lowers to uir-symbol "...", not ?atom-ELLIPSIS.
+(let ([cst (py-parse-file-input "y = ...\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define stmt (first (uir-block-stmts uir)))
+  (check-true (uir-set!? stmt) "ellipsis assignment lowers to uir-set!")
+  (define val (uir-set!-value stmt))
+  (check-true (uir-symbol? val) "ellipsis lowers to uir-symbol")
+  (check-equal? (uir-symbol-name val) "..." "ellipsis symbol is ..."))
+
+;; except* (PEP 654) parses and lowers; the `*` is a token the lowering skips,
+;; so the catch still extracts type + (absent) name.
+(let ([cst (py-parse-file-input "try: pass\nexcept* ValueError: pass\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define t (first (uir-block-stmts uir)))
+  (check-true (uir-try? t) "except* lowers to uir-try")
+  (check-equal? (length (uir-try-catches t)) 1 "one except* clause")
+  (let ([cat (car (uir-try-catches t))])
+    (check-true (uir-var? (car cat)) "exception type is var")
+    (check-equal? (uir-symbol-name (uir-var-name (car cat))) "ValueError"
+                  "exception type is ValueError")
+    (check-true (uir-null? (cadr cat)) "no as-name in bare except*")))
+
 ;; ── For loops ─────────────────────────────────────────────────────
 
 ;; round-trip: for x in y: pass
@@ -177,12 +294,33 @@
   (check-true (uir-await? uir) "await lowers to uir-await")
   (check-true (uir-call? (uir-await-expr uir)) "await wraps a call"))
 
+;; ── Function calls ─────────────────────────────────────────────────
+
+;; UIR inspection: foo(1, 2, 3) keeps all three arguments
+(let ([cst (py-parse "foo(1, 2, 3)\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (check-true (uir-call? uir) "call lowers to uir-call")
+  (check-equal? (length (uir-call-args uir)) 3 "call has three args"))
+
+;; round-trip: foo(1, 2, 3)
+(check-py "foo(1, 2, 3)\n" "foo(1, 2, 3)")
+
+;; round-trip: trailing comma normalizes to no trailing comma
+(check-py "foo(1, 2,)\n" "foo(1, 2)")
+
 ;; ── Async def ─────────────────────────────────────────────────────
 
 ;; UIR inspection: async def foo(): pass
 (let ([cst (py-parse "async def foo(): pass\n\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
-  (check-true (uir-fn? uir) "async def lowers to uir-fn"))
+  (check-true (uir-call? uir) "async def lowers to an async-fn wrapper call")
+  (check-equal? (uir-symbol-name (uir-call-callee uir)) "async-fn"
+                "async def uses the async-fn wrapper")
+  (check-equal? (length (uir-call-args uir)) 1 "async-fn wraps one function")
+  (check-true (uir-fn? (first (uir-call-args uir))) "inner is uir-fn"))
+
+;; round-trip: async def foo(): pass
+(check-py "async def foo(): pass\n\n" "async def foo():\n    pass")
 
 ;; ── Lambda ────────────────────────────────────────────────────────
 
@@ -228,9 +366,9 @@
 (let ([cst (py-parse "@effects({\"llm\": {\"max\": 5}})\ndef summarize(): pass\n\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
   (define emitted (emit-python uir))
-  (check-not-false (string-contains? emitted "def __validate_effects(row):")
-                   "preamble defines __validate_effects")
-  (check-not-false (string-contains? emitted "@__validate_effects({\"llm\": {\"modality\": \"may\", \"max\": 5}})")
+  (check-not-false (string-contains? emitted "def __withEffects(row):")
+                   "preamble defines __withEffects")
+  (check-not-false (string-contains? emitted "@__withEffects({\"llm\": {\"modality\": \"may\", \"max\": 5}})")
                    "guard decorator emitted with the effect row")
   (check-not-false (string-contains? emitted "def summarize():")
                    "decorated function still emitted"))
@@ -360,6 +498,36 @@
 ;; round-trip: x[a, b]
 (check-py "x[a, b]\n" "x[[a, b]]")
 
+;; UIR inspection: slices lower to (call "slice" (list start stop step)).
+;; Uses py-parse-file-input so these run despite the single_input bug (#1).
+(define (check-slice src start stop step)
+  (define cst (py-parse-file-input src))
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define stmt (first (uir-block-stmts uir)))
+  (define rhs (uir-set!-value stmt))
+  (check-true (uir-get? rhs) (format "~s is a subscript get" src))
+  (define field (uir-get-field rhs))
+  (check-true (uir-call? field) (format "~s field is a slice call" src))
+  (check-equal? (uir-symbol-name (uir-call-callee field)) "slice" (format "~s callee is slice" src))
+  (define args (uir-call-args field))
+  (check-equal? (length args) 3 (format "~s slice has 3 args" src))
+  (check-equal? (uir-null? (list-ref args 0)) start (format "~s start nullness" src))
+  (check-equal? (uir-null? (list-ref args 1)) stop (format "~s stop nullness" src))
+  (check-equal? (uir-null? (list-ref args 2)) step (format "~s step nullness" src)))
+
+(check-slice "x = a[1:2]\n" #f #f #t)     ;; start=1 stop=2 step=null
+(check-slice "x = a[:2]\n" #t #f #t)      ;; start=null stop=2
+(check-slice "x = a[1:]\n" #f #t #t)      ;; start=1 stop=null
+(check-slice "x = a[::2]\n" #t #t #f)     ;; start=null stop=null step=2
+(check-slice "x = a[::]\n" #t #t #t)      ;; full copy
+
+;; UIR inspection: star_expr target lowers to uir-spread
+(let ([cst (py-parse-file-input "*a, b = c\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define stmt (first (uir-block-stmts uir)))
+  (check-true (uir-set!? stmt) "*a, b = c lowers to uir-set!")
+  (check-true (uir-spread? (uir-set!-name stmt)) "LHS is a spread"))
+
 ;; round-trip: f-string
 (check-py "f\"hello {name}\"\n" "f\"hello {name}\"")
 
@@ -488,6 +656,18 @@
 ;; round-trip: function body with return of a binop
 (check-py "def f(a, b):\n    return a + b\n\n" "def f(a, b):\n    return a + b")
 
+;; UIR inspection: positional-only params (PEP 570) lower cleanly — the `/`
+;; marker is dropped (it only constrains call sites, not effects), but every
+;; parameter before and after it must survive as a uir-typed-param.
+(let ([cst (py-parse "def f(a, b, /, c=1, *args, **kw):\n    pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define params (uir-fn-params uir))
+  (check-equal? (map uir-symbol-name params)
+                '("a" "b" "c" "args" "kw")
+                "positional-only params lower in order, / dropped")
+  (check-equal? (uir-number-value (uir-typed-param-default (caddr params)))
+                "1" "default after / is preserved"))
+
 ;; UIR inspection: annotated assignment
 (let ([cst (py-parse "x: int\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
@@ -553,7 +733,7 @@
 (let ([cst (py-parse "class Foo:\n    pass\n\n")])
   (define uir (lower-python cst py-tok-type py-tok-value))
   (check-true (uir-class? uir) "class lowers to uir-class")
-  (check-true (uir-null? (uir-class-super uir)) "no superclass"))
+  (check-equal? (uir-class-super uir) '() "no superclass"))
 
 ;; ── File input / multi-statement ────────────────────────────────────
 
@@ -624,6 +804,22 @@
   (define uir (lower-python cst py-tok-type py-tok-value))
   (define c1 (first (uir-match-cases uir)))
   (check-not-false (uir-case-guard c1) "has guard"))
+
+;; UIR inspection: open sequence pattern (comma-separated, no brackets) lowers
+;; to uir-pat-sequence, not ?pat-open_sequence_pattern. Uses py-parse-file-input
+;; because single_input is broken for compound statements (LOOP_PLAN issue #1).
+(let ([cst (py-parse-file-input
+            "match token.split_contents():\n    case \"partialdef\", partial_name, \"inline\":\n        pass\n\n")])
+  (define uir (lower-python cst py-tok-type py-tok-value))
+  (define m (first (uir-block-stmts uir)))
+  (define c1 (first (uir-match-cases m)))
+  (check-true (uir-pat-sequence? (uir-case-pattern c1))
+              "open sequence pattern lowers to uir-pat-sequence")
+  (define elems (uir-pat-sequence-elements (uir-case-pattern c1)))
+  (check-equal? (length elems) 3 "open sequence has three elements")
+  (check-true (uir-pat-literal? (first elems)) "first element is a literal")
+  (check-true (uir-pat-capture? (second elems)) "second element is a capture")
+  (check-true (uir-pat-literal? (third elems)) "third element is a literal"))
 
 ;; ── Cleanup ─────────────────────────────────────────────────────────
 

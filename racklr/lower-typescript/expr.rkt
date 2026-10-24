@@ -88,6 +88,43 @@
                                         (uir-if-then callee)
                                         (uir-call (uir-if-else callee) args))
                                 (uir-call callee args)))
+                           (define (openparen-call-args paren-node)
+                             (define args-es (second (kids-of paren-node)))
+                             (let loop ([ks (kids-of args-es)] [acc '()])
+                               (cond [(null? ks) (reverse acc)]
+                                     [(cst-node? (car ks))
+                                      (loop (cdr ks)
+                                            (cons (lower-single-expression (car ks) tk-type tk-value) acc))]
+                                     [(pair? (car ks))
+                                      ;; Comma-separated remaining args wrapped in groups
+                                      (define more-args
+                                        (for/list ([g (car ks)] #:when (cst-node? g))
+                                          (define inner (second (kids-of g)))
+                                          (lower-single-expression inner tk-type tk-value)))
+                                      (loop (cdr ks) (append (reverse more-args) acc))]
+                                     [else (loop (cdr ks) acc)])))
+                           (define (lower-call-args callee args-node)
+                             (cond
+                               [(and (cst-node? args-node) (eq? (tag-of args-node) 'arguments))
+                                (optchain-call callee (lower-arguments args-node tk-type tk-value))]
+                               [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
+                                     (>= (length (kids-of args-node)) 3)
+                                     (tok? (first (kids-of args-node)) tk-type)
+                                     (eq? (tk-type (first (kids-of args-node))) 'OpenParen))
+                                (optchain-call callee (openparen-call-args args-node))]
+                               [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
+                                     (= (length (kids-of args-node)) 2)
+                                     (cst-node? (first (kids-of args-node)))
+                                     (eq? (tag-of (first (kids-of args-node))) 'singleExpression)
+                                     (cst-node? (second (kids-of args-node)))
+                                     (eq? (tag-of (second (kids-of args-node))) 'arguments))
+                                ;; Curried call f(inner)(outer): the inner suffix
+                                ;; holds the rest of the chain, the outer is an
+                                ;; `arguments` node.
+                                (define inner-call (lower-call-args callee (first (kids-of args-node))))
+                                (optchain-call inner-call
+                                               (lower-arguments (second (kids-of args-node)) tk-type tk-value))]
+                               [else (uir-null)]))
                            (define args-node (second kids))
                           ;; Check for 'as' cast parsed as IdentifierExpression:
                           ;; singleExpression(identifierName(identifier(As)), singleExpression(type))
@@ -98,32 +135,8 @@
                                  (eq? (tag-of (first (kids-of args-node))) 'identifierName)
                                  (let ([id-tok (first (kids-of (first (kids-of (first (kids-of args-node))))))])
                                    (and (tok? id-tok tk-type) (eq? (tk-type id-tok) 'As)))))
-                          (cond [is-as-cast? callee-raw]  ;; strip 'as type' cast, keep left side
-                                [(and (cst-node? args-node) (eq? (tag-of args-node) 'arguments))
-                                (optchain-call callee-raw (lower-arguments args-node tk-type tk-value))]
-                               [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
-                                     (>= (length (kids-of args-node)) 3)
-                                     (tok? (first (kids-of args-node)) tk-type)
-                                     (eq? (tk-type (first (kids-of args-node))) 'OpenParen))
-                                ;; TS call: callee + singleExpression(OpenParen, expressionSequence, CloseParen)
-                                (define inner-kids (kids-of args-node))
-                                (define args-es (second inner-kids))
-                                (define arg-exprs
-                                  (let loop ([ks (kids-of args-es)] [acc '()])
-                                    (cond [(null? ks) (reverse acc)]
-                                          [(cst-node? (car ks))
-                                           (loop (cdr ks)
-                                                 (cons (lower-single-expression (car ks) tk-type tk-value) acc))]
-                                          [(pair? (car ks))
-                                           ;; Comma-separated remaining args wrapped in groups
-                                           (define more-args
-                                             (for/list ([g (car ks)] #:when (cst-node? g))
-                                               (define inner (second (kids-of g)))
-                                               (lower-single-expression inner tk-type tk-value)))
-                                           (loop (cdr ks) (append (reverse more-args) acc))]
-                                          [else (loop (cdr ks) acc)])))
-                                (optchain-call callee-raw arg-exprs)]
-                                [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
+                           (cond [is-as-cast? callee-raw]  ;; strip 'as type' cast, keep left side
+                                 [(and (cst-node? args-node) (eq? (tag-of args-node) 'singleExpression)
                                       (= (length (kids-of args-node)) 2)
                                       (cst-node? (first (kids-of args-node)))
                                       (eq? (tag-of (first (kids-of args-node))) 'typeArguments))
@@ -147,7 +160,7 @@
                                                [else (loop (cdr ks) acc)]))
                                        '()))
                                  (optchain-call callee-raw arg-exprs)]
-                               [else (uir-null)])])])]
+                                [else (lower-call-args callee-raw args-node)])])])]
         [(= (length kids) 3)
          (cond [(and (tok? (first kids) tk-type) (eq? (tk-type (first kids)) 'New))
                 (cond

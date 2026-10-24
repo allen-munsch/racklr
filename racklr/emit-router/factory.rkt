@@ -109,7 +109,7 @@
                                          #:jsx-lower-tk-type jsx-tok-type
                                          #:jsx-lower-tk-value jsx-tok-value)])
              (define layout-cst (ts-parse processed))
-             (define layout-uir (ts-lower:lower-program layout-cst ts-tok-type ts-tok-value))
+             (define layout-uir (ts-lower:lower-program layout-cst ts-tok-type ts-tok-value (ts-tokenize processed)))
              (define hooks-lowered (lower-hooks layout-uir))
              (define layout-uir-jsx (restore-jsx hooks-lowered layout-jsx-uir))
              (define layout-js (emit-javascript layout-uir-jsx))
@@ -131,7 +131,7 @@
              [(list _ mapping) mapping]
              [#f #f]))
          (define-values (page-js static-props server-props head-html)
-           (page->js ts-parse ts-tok-type ts-tok-value jsx-parse jsx-tok-type jsx-tok-value
+           (page->js ts-parse ts-tokenize ts-tok-type ts-tok-value jsx-parse jsx-tok-type jsx-tok-value
                      resolved #:css-mapping css-mapping
                      #:project-root project-root
                      #:original-source src))

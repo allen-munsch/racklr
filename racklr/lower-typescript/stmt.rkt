@@ -2,6 +2,7 @@
 
 (require racklr/tree
          racklr/uir
+         racklr/effects/jsdoc-annot
          "helpers.rkt"
          "expr.rkt")
 
@@ -16,9 +17,32 @@
 
 ;; ── Entry ────────────────────────────────────────────────────────────
 
-(define (lower-program cst tk-type tk-value)
+(define (lower-program cst tk-type tk-value [tokens '()])
   (define se (find-node-or-list cst))
-  (if se (lower-source-elements se tk-type tk-value) (uir-null)))
+  (cond
+    [(not se) (uir-null)]
+    [(null? tokens) (lower-source-elements se tk-type tk-value)]
+    [else
+     ;; With comment-preserving tokens supplied, attach JSDoc @effects rows to
+     ;; the top-level declarations that follow them.
+     (define elements (top-level-elements se))
+     (define annotations (jsdoc-annotations tokens tk-type tk-value))
+     (define-values (_remaining stmts)
+       (for/fold ([remaining annotations] [out '()])
+                 ([e (in-list elements)])
+         (define stmt (lower-source-elements e tk-type tk-value))
+         (define-values (row rest) (take-annotation remaining (min-token-offset e)))
+         (values rest (cons (if row (attach-jsdoc-row stmt row) stmt) out))))
+     (uir-block (filter-map (λ (s) s) (reverse stmts)))]))
+
+(define (top-level-elements se)
+  (cond
+    [(cst-node? se)
+     (if (eq? (cst-node-tag se) 'sourceElements)
+         (or (find-list se) '())
+         (list se))]
+    [(pair? se) se]
+    [else (list se)]))
 
 (define (lower-source-elements v tk-type tk-value)
   (cond [(pair? v)
@@ -652,7 +676,7 @@
               (for/list ([elem (in-list element-list)]
                          #:when (cst-node? elem))
                 (lower-class-element elem tk-type tk-value))))))
-  (uir-class class-name super '() methods))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() methods))
 
 (define (extract-param-list fpl tk-type tk-value)
   ;; Extract parameter names from formalParameterList or parameterList

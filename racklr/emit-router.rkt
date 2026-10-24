@@ -20,10 +20,11 @@
   (let ([factory #f])
     (lambda args
       (unless factory
-        (dynamic-require 'racklr/gen-test 'void) ;; ensure gen-test loaded
+        (dynamic-require 'racklr/gen-test #f) ;; ensure gen-test loaded
         (define g (dynamic-require 'racklr/gen-test 'gen-and-load))
+        (define gc (dynamic-require 'racklr/gen-test 'gen-and-load-comments))
         (define-values (p t tt tv)
-          (g "grammars-v4/javascript/typescript-cleaned/TypeScriptParser.g4"))
+          (gc "grammars-v4/javascript/typescript-cleaned/TypeScriptParser.g4"))
         (define-values (jp jt jtt jtv)
           (g "grammars-v4/javascript/jsx-cleaned/JSXParser.g4"))
         (set! factory (make-emit-pages-html p t tt tv jp jt jtt jtv)))

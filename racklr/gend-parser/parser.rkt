@@ -310,7 +310,7 @@
   (format "(provide ~a)"
           (string-join (map (λ (n) (format "parse-~a" n)) names) " ")))
 
-(define (gen-entry parser-rules)
+(define (gen-entry parser-rules #:preserve-comments? [preserve-comments? #f])
   (define first-name
     (let ([program-rule (findf (lambda (r)
                                  (string=? (any-tree-text (first (any-tree-children r))) "program"))
@@ -318,11 +318,15 @@
       (if program-rule
           "program"
           (any-tree-text (first (any-tree-children (first parser-rules)))))))
+  (define tks-expr
+    (if preserve-comments?
+        "(filter (lambda (t) (not (hidden-token? t))) (tokenize in))"
+        "(tokenize in)"))
   (format "
 (define (parse in)
-  (define tks (tokenize in))
+  (define tks ~a)
   (match-define (list fp res) (parse-~a tks 0))
-  res)" first-name))
+  res)" tks-expr first-name))
 
 (define (detect-left-recursion parser-rules)
   ;; Check each parser rule for direct left-recursive alternatives

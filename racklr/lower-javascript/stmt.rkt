@@ -243,7 +243,7 @@
       (define se (find-kid grp 'singleExpression))
       (when se
         (set! super (lower-single-expression se tk-type tk-value)))))
-  (uir-class class-name super '() '()))
+  (uir-class class-name (if (uir-null? super) '() (list super)) '() '()))
 
 (define (lower-switch-stmt node tk-type tk-value)
   (define kids (kids-of node))
@@ -612,6 +612,7 @@
 ;; (breaks the statement↔expression cycle; see expr.rkt).
 (fn-body-lowerer lower-fn-body)
 (yield-stmt-lowerer lower-yield-stmt)
+(fn-decl-lowerer lower-fn-decl)
 
 (module+ main
   (displayln "lower-javascript loaded."))
