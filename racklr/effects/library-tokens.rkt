@@ -28,6 +28,8 @@
   effect-tokens-framework-exception-names effect-tokens-declarative-names
   effect-tokens-pure-stdlib-bare-names effect-tokens-gettext-names
   effect-tokens-pure-config-method-names
+  effect-tokens-python-builtins effect-tokens-pure-dunder-names
+  effect-tokens-str-method-names effect-tokens-pure-container-method-names
   default-effect-tokens)
 
 ;; The lexicon of tokens the engine classifies. All fields are name sets (or a
@@ -40,7 +42,8 @@
    time-methods root-method-effects
    pure-stdlib-roots pure-stdlib-methods
    framework-exception-names declarative-names
-   pure-stdlib-bare-names gettext-names pure-config-method-names)
+   pure-stdlib-bare-names gettext-names pure-config-method-names
+   python-builtins pure-dunder-names str-method-names pure-container-method-names)
   #:transparent)
 
 (define default-effect-tokens
@@ -183,4 +186,41 @@
    ;; external state of interest
    (set "add_argument" "add_subparsers" "set_defaults" "parse_args"
         "parse_known_args" "addQuickElement" "startElement" "endElement"
-        "characters" "ignorableWhitespace")))
+        "characters" "ignorableWhitespace")
+   ;; ── pure name tables (relocated from pure-roots.rkt) ─────────────
+   ;; Side-effect-free Python builtins (lower to uir-var callees). Effectful
+   ;; builtins (open/input/print/eval/exec/compile/breakpoint/help) are
+   ;; deliberately absent so they stay `unknown` rather than being marked pure.
+   (set "abs" "all" "any" "ascii" "bin" "bool" "bytearray" "bytes" "callable"
+        "chr" "classmethod" "complex" "delattr" "dict" "dir" "divmod"
+        "enumerate" "filter" "float" "format" "frozenset" "getattr" "globals"
+        "hasattr" "hash" "hex" "id" "int" "isinstance" "issubclass" "iter"
+        "len" "list" "locals" "map" "max" "memoryview" "min" "next" "object"
+        "oct" "ord" "pow" "property" "range" "repr" "reversed" "round" "set"
+        "setattr" "slice" "sorted" "staticmethod" "str" "sum" "super" "tuple"
+        "type" "vars" "zip" "__import__")
+   ;; Protocol ("dunder") method names on an arbitrary receiver. `__call__`,
+   ;; `__enter__`, `__exit__`, and `__getattr__` are deliberately absent: they
+   ;; dispatch to arbitrary (possibly effectful) code and stay `unknown`.
+   (set "__init__" "__new__" "__repr__" "__str__" "__format__"
+        "__eq__" "__ne__" "__lt__" "__le__" "__gt__" "__ge__" "__hash__"
+        "__bool__" "__len__" "__contains__" "__iter__" "__next__"
+        "__getitem__" "__setitem__" "__delitem__" "__copy__" "__deepcopy__")
+   ;; String-literal method names (`"".join(x)`); the uir-string base is what
+   ;; disambiguates them from an arbitrary `obj.join(...)`.
+   (set "join" "format" "format_map" "split" "rsplit" "splitlines" "strip"
+        "lstrip" "rstrip" "lower" "upper" "capitalize" "title" "swapcase"
+        "casefold" "replace" "translate" "zfill" "center" "ljust" "rjust"
+        "expandtabs" "count" "find" "rfind" "index" "rindex" "startswith"
+        "endswith" "isalnum" "isalpha" "isascii" "isdecimal" "isdigit"
+        "isidentifier" "islower" "isnumeric" "isprintable" "isspace" "istitle"
+        "isupper" "encode" "partition" "rpartition" "removeprefix" "removesuffix"
+        "maketrans")
+   ;; Pure collection-method names on an arbitrary receiver. Deliberately omits
+   ;; every name that collides with a Django QuerySet/RelatedManager operation
+   ;; (`get`, `update`, `filter`, ...): those reach `direct-effect-of-callee`
+   ;; first and must classify `db`, so anything still carrying one here is an
+   ;; arbitrary object and stays `unknown`.
+   (set "append" "extend" "insert" "pop" "popitem" "sort" "index" "keys"
+        "items" "setdefault" "copy" "fromkeys" "discard"
+        "issubset" "issuperset" "isdisjoint")))
