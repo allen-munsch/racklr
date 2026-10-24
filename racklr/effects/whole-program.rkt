@@ -119,7 +119,9 @@
                           [else
                            (define dom (module-effect-tag (handle-path h)))
                            (cond [(eq? dom 'pure) 'pure]
-                                 [dom (effect-cap dom '())]
+                                 [dom (effect-cap dom (method-ops dom (handle-path h)
+                                                                  (handle-name h)
+                                                                  (symbol->string mname)))]
                                  [else #f])])]
                        [(module)
                         (define dom (module-effect-tag (handle-path h)))

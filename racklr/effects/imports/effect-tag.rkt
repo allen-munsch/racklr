@@ -70,32 +70,8 @@
   ;; Seam for per-class overrides; the default is the module's domain.
   (module-effect-tag path config))
 
-;; ── primitive-operation vocabulary (per domain) ─────────────────────
-;;
-;; db: the operation is the SQL access kind.
-;;   db.read  = SELECT (get/filter/count/exists/fetch*/...)
-;;   db.write = DML/DDL (update/delete/create/save/execute/commit/...)
-;; io: the operation names a RESOURCE (stdio/file/socket/http) and a verb
-;;   (read/write/close/...), e.g. file.read, stdio.write, http.write. Resource
-;;   is derived from the class's module path; verb from the method name.
-;; Methods whose verb is not classified keep () — sound: the domain is known,
-;; the specific operation is not.
-
-(define db-read-methods
-  (set "get" "filter" "all" "count" "exists" "first" "last" "iterator"
-       "values" "values_list" "dates" "datetimes" "in_bulk" "distinct"
-       "order_by" "defer" "only" "select_related" "prefetch_related" "using"
-       "alias" "annotate" "aggregate" "fetchone" "fetchall" "fetchmany"
-       "latest" "earliest" "none" "explain" "raw" "resolve_expression"))
-
-(define db-write-methods
-  (set "create" "update" "delete" "save" "bulk_create" "bulk_update"
-       "get_or_create" "update_or_create" "execute" "executemany" "commit"
-       "rollback" "insert" "raw_delete" "set" "add" "remove" "clear"
-       "create_function" "create_aggregate" "create_deterministic_function"))
-
-(define io-read-verbs  (set "read" "readline" "readlines" "recv" "recvfrom" "readinto" "peek" "readable"))
-(define io-write-verbs (set "write" "writelines" "send" "sendall" "sendto"))
+;; The db/io verb vocabulary lives in library-config.rkt (DATA); this engine
+;; module consumes it only through the bindings required from that module.
 
 ;; A typed operation symbol: domain<ReceiverType>.verb (e.g. db<QuerySet>.read,
 ;; io<File>.write). The receiver TYPE is the concrete class that performs the
@@ -118,24 +94,12 @@
     [(io) (cond
             [(set-member? io-write-verbs mname) (list (typed-op domain cname "write"))]
             [(set-member? io-read-verbs mname)  (list (typed-op domain cname "read"))]
-            [(member mname '("close" "seek" "tell" "truncate" "fileno" "flush" "readable" "writable" "seekable"))
-             (list (typed-op domain cname mname))]
+            [(set-member? io-other-verbs mname) (list (typed-op domain cname mname))]
             [else '()])]
     [else '()]))
 
-;; Builtin receiver classes (the seed environment): method names tagged pure.
-;; This is what resolves `dict.get` vs `QuerySet.get` by class identity.
-(define builtin-class-methods
-  (hash "dict"  (set "get" "keys" "values" "items" "update" "pop" "popitem"
-                     "setdefault" "clear" "copy" "fromkeys")
-        "list"  (set "append" "extend" "insert" "pop" "remove" "clear" "index"
-                     "count" "sort" "reverse" "copy")
-        "set"   (set "add" "remove" "discard" "pop" "clear" "union"
-                     "intersection" "difference" "symmetric_difference" "update"
-                     "issubset" "issuperset" "isdisjoint" "copy")
-        "str"   (set "join" "format" "format_map" "split" "rsplit" "strip"
-                     "lstrip" "rstrip" "lower" "upper" "replace" "startswith"
-                     "endswith" "find" "index" "count")))
+;; Builtin receiver classes (the seed environment) live in library-config.rkt
+;; (DATA) as `builtin-class-methods`; re-exported for the public contract.
 
 ;; Derive Class.method → effect-cap for every class in a tagged module. Pure
 ;; modules (domain 'pure) and untagged modules contribute nothing; methods

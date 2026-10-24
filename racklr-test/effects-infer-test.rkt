@@ -856,6 +856,23 @@
   (check-equal? (modality r 'db) 'may)
   (check-equal? (entry-ops (row-lookup r 'db)) '(db<Connection>.write)))
 
+(define (test-imported-receiver-dataflow)
+  ;; `qs.filter(...)` where `qs` was imported as a CLASS from a db-tagged module
+  ;; (no blessed caps entry): resolves class→module→domain and derives the typed
+  ;; read op from the method name, the same as a locally-tracked receiver.
+  (define p (prog (fn "run"
+                      (uir-call (dot (v "qs") "filter")
+                                (list (uir-record '()))))))
+  (define env
+    (import-env (hash "app.py" "app")
+                (hash "app" (hash "qs" (handle 'class "django.db.models" "QuerySet")))
+                (hash)))
+  (define r (hash-ref (infer-effects-all (list (cons "app.py" p)) #:import-env env)
+                      (cons "app.py" 'run)))
+  (check-equal? (row-names r) '(db))
+  (check-equal? (modality r 'db) 'may)
+  (check-equal? (entry-ops (row-lookup r 'db)) '(db<QuerySet>.read)))
+
 (define (test-imported-module-pure)
   ;; `sqlmod.parse(...)` where `sqlmod` resolves to module `sqlparse` (tagged
   ;; pure): classified pure (no entry), not `unknown`.
@@ -1341,6 +1358,7 @@
   (test-whole-program-cross-file-inheritance)
   (test-whole-program-collision-stays-distinct)
   (test-imported-class-cap-effect)
+  (test-imported-receiver-dataflow)
   (test-imported-module-pure)
   (test-receiver-type-local-constructor)
   (test-receiver-type-self-attr)
